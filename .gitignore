@@ -1,3 +1,7 @@
 build
 tmp
 *.gcov
+
+# Jetbrains stuff
+.idea/
+cmake-build-*/
