@@ -168,7 +168,7 @@ void NetSessions::Done()
 
 void NetSessions::NextPacket(double t, const Packet* pkt)
 	{
-	SegmentProfiler(segment_logger, "dispatching-packet");
+    DBG_LOG(DBG_LLPOC, "[LAYER 3] Next packet with ts=%f has layer 3 protocol %d", pkt->time, pkt->l3_proto);
 
 	if ( raw_packet )
 		mgr.QueueEventFast(raw_packet, {pkt->BuildPktHdrVal()});
@@ -314,7 +314,9 @@ static unsigned int gre_header_len(uint16 flags)
 void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr,
 			       const EncapsulationStack* encapsulation)
 	{
-	uint32 caplen = pkt->cap_len - pkt->hdr_size;
+    DBG_LOG(DBG_LLPOC, "[LAYER 4] Next packet with ts=%f contains protocol %d", pkt->time, (int) ip_hdr->NextProto());
+
+    uint32 caplen = pkt->cap_len - pkt->hdr_size;
 	const struct ip* ip4 = ip_hdr->IP4_Hdr();
 
 	uint32 len = ip_hdr->TotalLen();

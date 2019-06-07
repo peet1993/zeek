@@ -21,6 +21,7 @@ enum DebugStream {
 	DBG_STRING,	// String code
 	DBG_NOTIFIERS,	// Notifiers (see StateAccess.h)
 	DBG_MAINLOOP,	// Main IOSource loop
+    DBG_LLPOC,      // Low-Layer Analyzer Proof of Concept
 	DBG_ANALYZER,	// Analyzer framework
 	DBG_TM,		// Time-machine packet input via Brocolli
 	DBG_LOGGING,	// Logging streams
