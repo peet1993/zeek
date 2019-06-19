@@ -99,6 +99,7 @@ void Reassembler::NewBlock(double t, uint64 seq, uint64 len, const u_char* data)
 	if ( len == 0 )
 		return;
 
+//	std::cout << "--------------\n* Block Data *\n--------------" << std::endl << data << std::endl;
 	uint64 upper_seq = seq + len;
 
 	CheckOverlap(old_blocks, last_old_block, seq, len, data);
