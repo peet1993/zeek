@@ -4,7 +4,6 @@
 
 #include "NetVar.h"
 #include "File.h"
-#include "OSFinger.h"
 #include "Event.h"
 
 #include "analyzer/protocol/pia/PIA.h"
@@ -115,201 +114,6 @@ static RecordVal* build_syn_packet_val(int is_orig, const IP_Hdr* ip,
 	return v;
 	}
 
-static RecordVal* build_os_val(int is_orig, const IP_Hdr* ip,
-                               const struct tcphdr* tcp, uint32 tcp_hdr_len)
-	{
-	if ( ! is_orig )
-		// Later we might use SYN-ACK fingerprinting here.
-		return 0;
-
-	// Passive OS fingerprinting wants to know a lot about IP and TCP
-	// options: how many options there are, and in which order.
-	int winscale = 0;
-	int MSS = 0;
-	int optcount = 0;
-	uint32 quirks = 0;
-	uint32 tstamp = 0;
-	uint8 op[MAXOPT];
-
-	if ( ip->HdrLen() > 20 )
-		quirks |= QUIRK_IPOPT;
-
-	if ( ip->ID() == 0 )
-		quirks |= QUIRK_ZEROID;
-
-	if ( tcp->th_seq == 0 )
-		quirks |= QUIRK_SEQ0;
-
-	if ( tcp->th_seq == tcp->th_ack )
-		quirks |= QUIRK_SEQEQ;
-
-	if ( tcp->th_flags & ~(TH_SYN|TH_ACK|TH_RST|TH_ECE|TH_CWR) )
-		quirks |= QUIRK_FLAGS;
-
-	if ( ip->TotalLen() - ip->HdrLen() - tcp_hdr_len > 0 )
-		quirks |= QUIRK_DATA;	// SYN with data
-
-	if ( tcp->th_ack )
-		quirks |= QUIRK_ACK;
-	if ( tcp->th_urp )
-		quirks |= QUIRK_URG;
-	if ( tcp->th_x2 )
-		quirks |= QUIRK_X2;
-
-	// Parse TCP options.
-	u_char* options = (u_char*) tcp + sizeof(struct tcphdr);
-	u_char* opt_end = (u_char*) tcp + tcp_hdr_len;
-
-	while ( options < opt_end )
-		{
-		unsigned int opt = options[0];
-
-		if ( opt == TCPOPT_EOL )
-			{
-			op[optcount++] = TCPOPT_EOL;
-			if ( ++options < opt_end )
-				quirks |= QUIRK_PAST;
-
-			// All done - could flag if more junk left over ....
-			break;
-			}
-
-		if ( opt == TCPOPT_NOP )
-			{
-			op[optcount++] = TCPOPT_NOP;
-			++options;
-			continue;
-			}
-
-		if ( options + 1 >= opt_end )
-			{
-			// We've run off the end, no room for the length.
-			quirks |= QUIRK_BROKEN;
-			break;
-			}
-
-		unsigned int opt_len = options[1];
-
-		if ( options + opt_len > opt_end )
-			{
-			// No room for rest of the options.
-			quirks |= QUIRK_BROKEN;
-			break;
-			}
-
-		if ( opt_len == 0 )
-			// Trashed length field.
-			break;
-
-		switch ( opt ) {
-		case TCPOPT_SACK_PERMITTED:
-			// SACKOK LEN
-			op[optcount] = TCPOPT_SACK_PERMITTED;
-			break;
-
-		case TCPOPT_MAXSEG:
-			// MSS LEN D0 D1
-			if ( opt_len < 4 )
-				break;	// bad length
-
-			op[optcount] = TCPOPT_MAXSEG;
-			MSS = (options[2] << 8) | options[3];
-			break;
-
-		case TCPOPT_WINDOW:
-			// WSCALE LEN D0
-			if ( opt_len < 3 )
-				break;	// bad length
-
-			op[optcount] = TCPOPT_WINDOW;
-			winscale = options[2];
-			break;
-
-		case TCPOPT_TIMESTAMP:
-			// TSTAMP LEN T0 T1 T2 T3 A0 A1 A2 A3
-			if ( opt_len < 10 )
-				break;	// bad length
-
-			op[optcount] = TCPOPT_TIMESTAMP;
-
-			tstamp = ntohl(extract_uint32(options + 2));
-
-			if ( extract_uint32(options + 6) )
-				quirks |= QUIRK_T2;
-			break;
-
-		default:	// just skip over
-			op[optcount]=opt;
-			break;
-		}
-
-		if ( optcount < MAXOPT - 1 )
-			++optcount;
-		else
-			quirks |= QUIRK_BROKEN;
-
-		options += opt_len;
-		}
-
-	struct os_type os_from_print;
-	int id = sessions->Get_OS_From_SYN(&os_from_print,
-			uint16(ip->TotalLen()),
-			uint8(ip->DF()), uint8(ip->TTL()),
-			uint16(ntohs(tcp->th_win)),
-			uint8(optcount), op,
-			uint16(MSS), uint8(winscale),
-			tstamp, quirks,
-			uint8(tcp->th_flags & (TH_ECE|TH_CWR)));
-
-	if ( sessions->CompareWithPreviousOSMatch(ip->SrcAddr(), id) )
-		{
-		RecordVal* os = new RecordVal(OS_version);
-
-		os->Assign(0, new StringVal(os_from_print.os));
-
-		if ( os_from_print.desc )
-			os->Assign(1, new StringVal(os_from_print.desc));
-		else
-			os->Assign(1, val_mgr->GetEmptyString());
-
-		os->Assign(2, val_mgr->GetCount(os_from_print.dist));
-		os->Assign(3, OS_version_inference->GetVal(os_from_print.match));
-
-		return os;
-		}
-
-	return 0;
-	}
-
-
-static void passive_fingerprint(TCP_Analyzer* tcp, bool is_orig,
-                                const IP_Hdr* ip, const struct tcphdr* tp,
-                                uint32 tcp_hdr_len)
-	{
-	// is_orig will be removed once we can do SYN-ACK fingerprinting
-	if ( OS_version_found && is_orig )
-		{
-		const IPAddr& orig_addr = tcp->Conn()->OrigAddr();
-		AddrVal* src_addr_val = new AddrVal(orig_addr);
-
-		if ( generate_OS_version_event->Size() == 0 ||
-		     generate_OS_version_event->Lookup(src_addr_val) )
-			{
-			RecordVal* OS_val = build_os_val(is_orig, ip, tp, tcp_hdr_len);
-
-			if ( OS_val )
-				{ // found new OS version
-				tcp->ConnectionEventFast(OS_version_found, {
-					tcp->BuildConnVal(),
-					src_addr_val->Ref(),
-					OS_val,
-				});
-				}
-			}
-
-		Unref(src_addr_val);
-		}
-	}
 
 TCP_Analyzer::TCP_Analyzer(Connection* conn)
 : TransportLayerAnalyzer("TCP", conn)
@@ -401,6 +205,15 @@ analyzer::Analyzer* TCP_Analyzer::FindChild(Tag arg_tag)
 	return 0;
 	}
 
+bool TCP_Analyzer::RemoveChildAnalyzer(ID id)
+	{
+	auto rval = analyzer::TransportLayerAnalyzer::RemoveChildAnalyzer(id);
+
+	if ( rval )
+		return rval;
+
+	return RemoveChild(packet_children, id);
+	}
 
 void TCP_Analyzer::EnableReassembly()
 	{
@@ -428,7 +241,7 @@ const struct tcphdr* TCP_Analyzer::ExtractTCP_Header(const u_char*& data,
 							int& len, int& caplen)
 	{
 	const struct tcphdr* tp = (const struct tcphdr*) data;
-	uint32 tcp_hdr_len = tp->th_off * 4;
+	uint32_t tcp_hdr_len = tp->th_off * 4;
 
 	if ( tcp_hdr_len < sizeof(struct tcphdr) )
 		{
@@ -436,8 +249,8 @@ const struct tcphdr* TCP_Analyzer::ExtractTCP_Header(const u_char*& data,
 		return 0;
 		}
 
-	if ( tcp_hdr_len > uint32(len) ||
-	     tcp_hdr_len > uint32(caplen) )
+	if ( tcp_hdr_len > uint32_t(len) ||
+	     tcp_hdr_len > uint32_t(caplen) )
 		{
 		// This can happen even with the above test, due to TCP
 		// options.
@@ -481,7 +294,7 @@ void TCP_Analyzer::SetPartialStatus(TCP_Flags flags, bool is_orig)
 	}
 
 static void update_history(TCP_Flags flags, TCP_Endpoint* endpoint,
-			   uint64 rel_seq, int len)
+			   uint64_t rel_seq, int len)
 	{
 	int bits_set = (flags.SYN() ? 1 : 0) + (flags.FIN() ? 1 : 0) +
 			(flags.RST() ? 1 : 0);
@@ -539,8 +352,8 @@ static void update_history(TCP_Flags flags, TCP_Endpoint* endpoint,
 	}
 
 static void init_window(TCP_Endpoint* endpoint, TCP_Endpoint* peer,
-			TCP_Flags flags, bro_int_t scale, uint32 base_seq,
-			uint32 ack_seq)
+			TCP_Flags flags, bro_int_t scale, uint32_t base_seq,
+			uint32_t ack_seq)
 	{
 	// ### In the following, we could be fooled by an
 	// inconsistent SYN retransmission.  Where's a normalizer
@@ -577,7 +390,7 @@ static void init_window(TCP_Endpoint* endpoint, TCP_Endpoint* peer,
 	}
 
 static void update_window(TCP_Endpoint* endpoint, unsigned int window,
-                          uint32 base_seq, uint32 ack_seq, TCP_Flags flags)
+                          uint32_t base_seq, uint32_t ack_seq, TCP_Flags flags)
 	{
 	// Note, applying scaling here would be incorrect for an initial SYN,
 	// whose window value is always unscaled.  However, we don't
@@ -617,9 +430,9 @@ static void update_window(TCP_Endpoint* endpoint, unsigned int window,
 		if ( seq_delta(base_seq, endpoint->window_seq) >= 0 &&
 		     seq_delta(ack_seq, endpoint->window_ack_seq) >= 0 )
 			{
-			uint32 new_edge = ack_seq + window;
-			uint32 old_edge = endpoint->window_ack_seq + endpoint->window;
-			int32 advance = seq_delta(new_edge, old_edge);
+			uint32_t new_edge = ack_seq + window;
+			uint32_t old_edge = endpoint->window_ack_seq + endpoint->window;
+			int32_t advance = seq_delta(new_edge, old_edge);
 
 			if ( advance < 0 )
 				{
@@ -657,7 +470,7 @@ static void syn_weirds(TCP_Flags flags, TCP_Endpoint* endpoint, int data_len)
 
 void TCP_Analyzer::UpdateInactiveState(double t,
 			TCP_Endpoint* endpoint, TCP_Endpoint* peer,
-			uint32 base_seq, uint32 ack_seq,
+			uint32_t base_seq, uint32_t ack_seq,
 			int len, int is_orig, TCP_Flags flags,
 			int& do_close, int& gen_event)
 	{
@@ -879,7 +692,7 @@ void TCP_Analyzer::UpdateEstablishedState(
 	}
 
 void TCP_Analyzer::UpdateClosedState(double t, TCP_Endpoint* endpoint,
-				int32 delta_last, TCP_Flags flags, int& do_close)
+				int32_t delta_last, TCP_Flags flags, int& do_close)
 	{
 	if ( flags.SYN() )
 		Weird("SYN_after_close");
@@ -924,8 +737,8 @@ void TCP_Analyzer::UpdateResetState(int len, TCP_Flags flags)
 
 void TCP_Analyzer::UpdateStateMachine(double t,
 			TCP_Endpoint* endpoint, TCP_Endpoint* peer,
-			uint32 base_seq, uint32 ack_seq,
-			int len, int32 delta_last, int is_orig, TCP_Flags flags,
+			uint32_t base_seq, uint32_t ack_seq,
+			int len, int32_t delta_last, int is_orig, TCP_Flags flags,
 			int& do_close, int& gen_event)
 	{
 	do_close = 0;	// whether to report the connection as closed
@@ -961,7 +774,7 @@ void TCP_Analyzer::UpdateStateMachine(double t,
 	}
 
 void TCP_Analyzer::GeneratePacketEvent(
-					uint64 rel_seq, uint64 rel_ack,
+					uint64_t rel_seq, uint64_t rel_ack,
 					const u_char* data, int len, int caplen,
 					int is_orig, TCP_Flags flags)
 	{
@@ -980,7 +793,7 @@ void TCP_Analyzer::GeneratePacketEvent(
 
 int TCP_Analyzer::DeliverData(double t, const u_char* data, int len, int caplen,
 				const IP_Hdr* ip, const struct tcphdr* tp,
-				TCP_Endpoint* endpoint, uint64 rel_data_seq,
+				TCP_Endpoint* endpoint, uint64_t rel_data_seq,
 				int is_orig, TCP_Flags flags)
 	{
 	return endpoint->DataSent(t, rel_data_seq, len, caplen, data, ip, tp);
@@ -1016,11 +829,11 @@ void TCP_Analyzer::CheckPIA_FirstPacket(int is_orig, const IP_Hdr* ip)
 		}
 	}
 
-uint64 TCP_Analyzer::get_relative_seq(const TCP_Endpoint* endpoint,
-                                      uint32 cur_base, uint32 last,
-                                      uint32 wraps, bool* underflow)
+uint64_t TCP_Analyzer::get_relative_seq(const TCP_Endpoint* endpoint,
+                                      uint32_t cur_base, uint32_t last,
+                                      uint32_t wraps, bool* underflow)
 	{
-	int32 delta = seq_delta(cur_base, last);
+	int32_t delta = seq_delta(cur_base, last);
 
 	if ( delta < 0 )
 		{
@@ -1071,7 +884,7 @@ int TCP_Analyzer::get_segment_len(int payload_len, TCP_Flags flags)
 	}
 
 static void init_endpoint(TCP_Endpoint* endpoint, TCP_Flags flags,
-                          uint32 first_seg_seq, uint32 last_seq, double t)
+                          uint32_t first_seg_seq, uint32_t last_seq, double t)
 	{
 	switch ( endpoint->state ) {
 	case TCP_ENDPOINT_INACTIVE:
@@ -1087,6 +900,8 @@ static void init_endpoint(TCP_Endpoint* endpoint, TCP_Flags flags,
 			// numbering consistent.
 			endpoint->InitAckSeq(first_seg_seq - 1);
 			endpoint->InitStartSeq(first_seg_seq - 1);
+			// But ensure first packet is not marked duplicate
+			last_seq = first_seg_seq;
 			}
 
 		endpoint->InitLastSeq(last_seq);
@@ -1145,7 +960,7 @@ static void init_endpoint(TCP_Endpoint* endpoint, TCP_Flags flags,
 	}
 
 static void init_peer(TCP_Endpoint* peer, TCP_Endpoint* endpoint,
-                      TCP_Flags flags, uint32 ack_seq)
+                      TCP_Flags flags, uint32_t ack_seq)
 	{
 	if ( ! flags.SYN() && ! flags.FIN() && ! flags.RST() )
 		{
@@ -1170,9 +985,9 @@ static void init_peer(TCP_Endpoint* peer, TCP_Endpoint* endpoint,
 	peer->InitLastSeq(ack_seq - 1);
 	}
 
-static void update_ack_seq(TCP_Endpoint* endpoint, uint32 ack_seq)
+static void update_ack_seq(TCP_Endpoint* endpoint, uint32_t ack_seq)
 	{
-	int32 delta_ack = seq_delta(ack_seq, endpoint->AckSeq());
+	int32_t delta_ack = seq_delta(ack_seq, endpoint->AckSeq());
 
 	if ( ack_seq == 0 && delta_ack > TOO_LARGE_SEQ_DELTA )
 		// More likely that this is a broken ack than a
@@ -1185,10 +1000,10 @@ static void update_ack_seq(TCP_Endpoint* endpoint, uint32 ack_seq)
 
 // Returns the difference between last_seq and the last sequence
 // seen by the endpoint (may be negative).
-static int32 update_last_seq(TCP_Endpoint* endpoint, uint32 last_seq,
+static int32_t update_last_seq(TCP_Endpoint* endpoint, uint32_t last_seq,
                              TCP_Flags flags, int len)
 	{
-	int32 delta_last = seq_delta(last_seq, endpoint->LastSeq());
+	int32_t delta_last = seq_delta(last_seq, endpoint->LastSeq());
 
 	if ( (flags.SYN() || flags.RST()) &&
 	     (delta_last > TOO_LARGE_SEQ_DELTA ||
@@ -1215,14 +1030,14 @@ static int32 update_last_seq(TCP_Endpoint* endpoint, uint32 last_seq,
 		// ## endpoint->last_seq = last_seq;
 		endpoint->UpdateLastSeq(last_seq);
 
-	else if ( delta_last < 0 && len > 0 )
+	else if ( delta_last <= 0 && len > 0 )
 		endpoint->DidRxmit();
 
 	return delta_last;
 	}
 
 void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
-					uint64 seq, const IP_Hdr* ip, int caplen)
+					uint64_t seq, const IP_Hdr* ip, int caplen)
 	{
 	TransportLayerAnalyzer::DeliverPacket(len, data, orig, seq, ip, caplen);
 
@@ -1241,21 +1056,21 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 	if ( ! ValidateChecksum(tp, endpoint, len, caplen) )
 		return;
 
-	uint32 tcp_hdr_len = data - (const u_char*) tp;
+	uint32_t tcp_hdr_len = data - (const u_char*) tp;
 	TCP_Flags flags(tp);
 	SetPartialStatus(flags, endpoint->IsOrig());
 
-	uint32 base_seq = ntohl(tp->th_seq);
-	uint32 ack_seq = ntohl(tp->th_ack);
+	uint32_t base_seq = ntohl(tp->th_seq);
+	uint32_t ack_seq = ntohl(tp->th_ack);
 
 	int seg_len = get_segment_len(len, flags);
-	uint32 seq_one_past_segment = base_seq + seg_len;
+	uint32_t seq_one_past_segment = base_seq + seg_len;
 
 	init_endpoint(endpoint, flags, base_seq, seq_one_past_segment,
 	              current_timestamp);
 
 	bool seq_underflow = false;
-	uint64 rel_seq = get_relative_seq(endpoint, base_seq, endpoint->LastSeq(),
+	uint64_t rel_seq = get_relative_seq(endpoint, base_seq, endpoint->LastSeq(),
 					  endpoint->SeqWraps(), &seq_underflow);
 
 	if ( seq_underflow && ! flags.RST() )
@@ -1285,8 +1100,6 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 				SYN_vals->Ref(),
 			});
 			}
-
-		passive_fingerprint(this, is_orig, ip, tp, tcp_hdr_len);
 
 		Unref(SYN_vals);
 		}
@@ -1318,7 +1131,7 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 		PacketWithRST();
 		}
 
-	uint64 rel_ack = 0;
+	uint64_t rel_ack = 0;
 
 	if ( flags.ACK() )
 		{
@@ -1352,7 +1165,7 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 			}
 		}
 
-	int32 delta_last = update_last_seq(endpoint, seq_one_past_segment, flags, len);
+	int32_t delta_last = update_last_seq(endpoint, seq_one_past_segment, flags, len);
 	endpoint->last_time = current_timestamp;
 
 	int do_close;
@@ -1374,7 +1187,7 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 		                    flags);
 
 	if ( tcp_option && tcp_hdr_len > sizeof(*tp) &&
-	     tcp_hdr_len <= uint32(caplen) )
+	     tcp_hdr_len <= uint32_t(caplen) )
 		ParseTCPOptions(tp, TCPOptionEvent, this, is_orig, 0);
 
 	if ( DEBUG_tcp_data_sent )
@@ -1383,7 +1196,7 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 			  network_time, len, caplen, Skipping());
 		}
 
-	uint64 rel_data_seq = flags.SYN() ? rel_seq + 1 : rel_seq;
+	uint64_t rel_data_seq = flags.SYN() ? rel_seq + 1 : rel_seq;
 
 	int need_contents = 0;
 	if ( len > 0 && (caplen >= len || packet_children.size()) &&
@@ -1405,8 +1218,28 @@ void TCP_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
 
 	// Handle child_packet analyzers.  Note: This happens *after* the
 	// packet has been processed and the TCP state updated.
-	LOOP_OVER_GIVEN_CHILDREN(i, packet_children)
-		(*i)->NextPacket(len, data, is_orig, rel_data_seq, ip, caplen);
+	analyzer_list::iterator next;
+
+	for ( auto i = packet_children.begin(); i != packet_children.end(); /* nop */ )
+		{
+		auto child = *i;
+
+		if ( child->IsFinished() || child->Removing() )
+			{
+			if ( child->Removing() )
+				child->Done();
+
+			DBG_LOG(DBG_ANALYZER, "%s deleted child %s",
+			        fmt_analyzer(this).c_str(), fmt_analyzer(child).c_str());
+			i = packet_children.erase(i);
+			delete child;
+			}
+		else
+			{
+			child->NextPacket(len, data, is_orig, rel_data_seq, ip, caplen);
+			++i;
+			}
+		}
 
 	if ( ! reassembling )
 		ForwardPacket(len, data, is_orig, rel_data_seq, ip, caplen);
@@ -1419,7 +1252,7 @@ void TCP_Analyzer::DeliverStream(int len, const u_char* data, bool orig)
 	Analyzer::DeliverStream(len, data, orig);
 	}
 
-void TCP_Analyzer::Undelivered(uint64 seq, int len, bool is_orig)
+void TCP_Analyzer::Undelivered(uint64_t seq, int len, bool is_orig)
 	{
 	Analyzer::Undelivered(seq, len, orig);
 	}
@@ -1888,7 +1721,7 @@ bool TCP_Analyzer::IsReuse(double t, const u_char* pkt)
 
 	if ( ! IsClosed() )
 		{
-		uint32 base_seq = ntohl(tp->th_seq);
+		uint32_t base_seq = ntohl(tp->th_seq);
 		if ( base_seq == conn_orig->StartSeq() )
 			return false;
 
@@ -1949,7 +1782,7 @@ void TCP_ApplicationAnalyzer::ProtocolViolation(const char* reason,
 	}
 
 void TCP_ApplicationAnalyzer::DeliverPacket(int len, const u_char* data,
-						bool is_orig, uint64 seq,
+						bool is_orig, uint64_t seq,
 						const IP_Hdr* ip, int caplen)
 	{
 	Analyzer::DeliverPacket(len, data, is_orig, seq, ip, caplen);
@@ -2030,7 +1863,7 @@ int endian_flip(int n)
 	return ((n & 0xff) << 8) | ((n & 0xff00) >> 8);
 	}
 
-int TCPStats_Endpoint::DataSent(double /* t */, uint64 seq, int len, int caplen,
+int TCPStats_Endpoint::DataSent(double /* t */, uint64_t seq, int len, int caplen,
 			const u_char* /* data */,
 			const IP_Hdr* ip, const struct tcphdr* /* tp */)
 	{
@@ -2090,13 +1923,13 @@ int TCPStats_Endpoint::DataSent(double /* t */, uint64 seq, int len, int caplen,
 
 	++num_in_order;
 
-	uint64 top_seq = seq + len;
+	uint64_t top_seq = seq + len;
 
-	int32 data_in_flight = seq_delta(endp->LastSeq(), endp->AckSeq());
+	int32_t data_in_flight = seq_delta(endp->LastSeq(), endp->AckSeq());
 	if ( data_in_flight < 0 )
 		data_in_flight = 0;
 
-	int64 sequence_delta = top_seq - max_top_seq;
+	int64_t sequence_delta = top_seq - max_top_seq;
 	if ( sequence_delta <= 0 )
 		{
 		if ( ! BifConst::ignore_keep_alive_rexmit || len > 1 || data_in_flight > 0 )
@@ -2173,7 +2006,7 @@ void TCPStats_Analyzer::Done()
 		});
 	}
 
-void TCPStats_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig, uint64 seq, const IP_Hdr* ip, int caplen)
+void TCPStats_Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig, uint64_t seq, const IP_Hdr* ip, int caplen)
 	{
 	TCP_ApplicationAnalyzer::DeliverPacket(len, data, is_orig, seq, ip, caplen);
 

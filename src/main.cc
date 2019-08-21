@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +38,6 @@ extern "C" {
 #include "DFA.h"
 #include "RuleMatcher.h"
 #include "Anon.h"
-#include "Serializer.h"
 #include "EventRegistry.h"
 #include "Stats.h"
 #include "Brofiler.h"
@@ -99,9 +98,6 @@ name_list prefixes;
 Stmt* stmts;
 EventHandlerPtr net_done = 0;
 RuleMatcher* rule_matcher = 0;
-FileSerializer* event_serializer = 0;
-FileSerializer* state_serializer = 0;
-EventPlayer* event_player = 0;
 EventRegistry* event_registry = 0;
 ProfileLogger* profiling_logger = 0;
 ProfileLogger* segment_logger = 0;
@@ -122,12 +118,13 @@ OpaqueType* topk_type = 0;
 OpaqueType* bloomfilter_type = 0;
 OpaqueType* x509_opaque_type = 0;
 OpaqueType* ocsp_resp_opaque_type = 0;
+OpaqueType* paraglob_type = 0;
 
 // Keep copy of command line
 int bro_argc;
 char** bro_argv;
 
-const char* bro_version()
+const char* zeek_version()
 	{
 #ifdef DEBUG
 	static char* debug_version = 0;
@@ -145,23 +142,20 @@ const char* bro_version()
 #endif
 	}
 
-const char* bro_dns_fake()
+bool bro_dns_fake()
 	{
-	if ( ! getenv("BRO_DNS_FAKE") )
-		return "off";
-	else
-		return "on";
+	return zeekenv("ZEEK_DNS_FAKE");
 	}
 
 void usage(int code = 1)
 	{
-	fprintf(stderr, "bro version %s\n", bro_version());
+	fprintf(stderr, "zeek version %s\n", zeek_version());
 	fprintf(stderr, "usage: %s [options] [file ...]\n", prog);
 	fprintf(stderr, "    <file>                         | policy file, or read stdin\n");
 	fprintf(stderr, "    -a|--parse-only                | exit immediately after parsing scripts\n");
 	fprintf(stderr, "    -b|--bare-mode                 | don't load scripts from the base/ directory\n");
 	fprintf(stderr, "    -d|--debug-policy              | activate policy file debugging\n");
-	fprintf(stderr, "    -e|--exec <bro code>           | augment loaded policies by given code\n");
+	fprintf(stderr, "    -e|--exec <zeek code>          | augment loaded policies by given code\n");
 	fprintf(stderr, "    -f|--filter <filter>           | tcpdump filter\n");
 	fprintf(stderr, "    -h|--help                      | command line help\n");
 	fprintf(stderr, "    -i|--iface <interface>         | read from given interface\n");
@@ -171,7 +165,6 @@ void usage(int code = 1)
 	fprintf(stderr, "    -t|--tracefile <tracefile>     | activate execution tracing\n");
 	fprintf(stderr, "    -v|--version                   | print version and exit\n");
 	fprintf(stderr, "    -w|--writefile <writefile>     | write to given tcpdump file\n");
-	fprintf(stderr, "    -x|--print-state <file.bst>    | print contents of state file\n");
 #ifdef DEBUG
 	fprintf(stderr, "    -B|--debug <dbgstreams>        | Enable debugging output for selected streams ('-B help' for help)\n");
 #endif
@@ -183,7 +176,6 @@ void usage(int code = 1)
 	fprintf(stderr, "    -N|--print-plugins             | print available plugins and exit (-NN for verbose)\n");
 	fprintf(stderr, "    -P|--prime-dns                 | prime DNS\n");
 	fprintf(stderr, "    -Q|--time                      | print execution time summary to stderr\n");
-	fprintf(stderr, "    -R|--replay <events.bst>       | replay events\n");
 	fprintf(stderr, "    -S|--debug-rules               | enable rule debugging\n");
 	fprintf(stderr, "    -T|--re-level <level>          | set 'RE_level' for rules\n");
 	fprintf(stderr, "    -U|--status-file <file>        | Record process status in file\n");
@@ -200,16 +192,16 @@ void usage(int code = 1)
 	fprintf(stderr, "    -n|--idmef-dtd <idmef-msg.dtd> | specify path to IDMEF DTD file\n");
 #endif
 
-	fprintf(stderr, "    $BROPATH                       | file search path (%s)\n", bro_path().c_str());
-	fprintf(stderr, "    $BRO_PLUGIN_PATH               | plugin search path (%s)\n", bro_plugin_path());
-	fprintf(stderr, "    $BRO_PLUGIN_ACTIVATE           | plugins to always activate (%s)\n", bro_plugin_activate());
-	fprintf(stderr, "    $BRO_PREFIXES                  | prefix list (%s)\n", bro_prefixes().c_str());
-	fprintf(stderr, "    $BRO_DNS_FAKE                  | disable DNS lookups (%s)\n", bro_dns_fake());
-	fprintf(stderr, "    $BRO_SEED_FILE                 | file to load seeds from (not set)\n");
-	fprintf(stderr, "    $BRO_LOG_SUFFIX                | ASCII log file extension (.%s)\n", logging::writer::Ascii::LogExt().c_str());
-	fprintf(stderr, "    $BRO_PROFILER_FILE             | Output file for script execution statistics (not set)\n");
-	fprintf(stderr, "    $BRO_DISABLE_BROXYGEN          | Disable Zeekygen documentation support (%s)\n", getenv("BRO_DISABLE_BROXYGEN") ? "set" : "not set");
-	fprintf(stderr, "    $ZEEK_DNS_RESOLVER             | IPv4/IPv6 address of DNS resolver to use (%s)\n", getenv("ZEEK_DNS_RESOLVER") ? getenv("ZEEK_DNS_RESOLVER") : "not set, will use first IPv4 address from /etc/resolv.conf");
+	fprintf(stderr, "    $ZEEKPATH                      | file search path (%s)\n", bro_path().c_str());
+	fprintf(stderr, "    $ZEEK_PLUGIN_PATH              | plugin search path (%s)\n", bro_plugin_path());
+	fprintf(stderr, "    $ZEEK_PLUGIN_ACTIVATE          | plugins to always activate (%s)\n", bro_plugin_activate());
+	fprintf(stderr, "    $ZEEK_PREFIXES                 | prefix list (%s)\n", bro_prefixes().c_str());
+	fprintf(stderr, "    $ZEEK_DNS_FAKE                 | disable DNS lookups (%s)\n", bro_dns_fake() ? "on" : "off");
+	fprintf(stderr, "    $ZEEK_SEED_FILE                | file to load seeds from (not set)\n");
+	fprintf(stderr, "    $ZEEK_LOG_SUFFIX               | ASCII log file extension (.%s)\n", logging::writer::Ascii::LogExt().c_str());
+	fprintf(stderr, "    $ZEEK_PROFILER_FILE            | Output file for script execution statistics (not set)\n");
+	fprintf(stderr, "    $ZEEK_DISABLE_ZEEKYGEN         | Disable Zeekygen documentation support (%s)\n", zeekenv("ZEEK_DISABLE_ZEEKYGEN") ? "set" : "not set");
+	fprintf(stderr, "    $ZEEK_DNS_RESOLVER             | IPv4/IPv6 address of DNS resolver to use (%s)\n", zeekenv("ZEEK_DNS_RESOLVER") ? zeekenv("ZEEK_DNS_RESOLVER") : "not set, will use first IPv4 address from /etc/resolv.conf");
 
 	fprintf(stderr, "\n");
 
@@ -353,8 +345,6 @@ void terminate_bro()
 
 	delete zeekygen_mgr;
 	delete timer_mgr;
-	delete event_serializer;
-	delete state_serializer;
 	delete event_registry;
 	delete analyzer_mgr;
 	delete file_mgr;
@@ -382,7 +372,7 @@ void termination_signal()
 
 	// Close files after net_delete(), because net_delete()
 	// might write to connection content files.
-	BroFile::CloseCachedFiles();
+	BroFile::CloseOpenFiles();
 
 	delete rule_matcher;
 
@@ -424,10 +414,9 @@ int main(int argc, char** argv)
 	name_list interfaces;
 	name_list read_files;
 	name_list rule_files;
-	char* bst_file = 0;
 	char* id_name = 0;
-	char* events_file = 0;
-	char* seed_load_file = getenv("BRO_SEED_FILE");
+
+	char* seed_load_file = zeekenv("ZEEK_SEED_FILE");
 	char* seed_save_file = 0;
 	char* user_pcap_filter = 0;
 	char* debug_streams = 0;
@@ -455,7 +444,6 @@ int main(int argc, char** argv)
 		{"tracefile",		required_argument,	0,	't'},
 		{"writefile",		required_argument,	0,	'w'},
 		{"version",		no_argument,		0,	'v'},
-		{"print-state",		required_argument,	0,	'x'},
 		{"no-checksums",	no_argument,		0,	'C'},
 		{"force-dns",		no_argument,		0,	'F'},
 		{"load-seeds",		required_argument,	0,	'G'},
@@ -463,7 +451,6 @@ int main(int argc, char** argv)
 		{"print-plugins",	no_argument,		0,	'N'},
 		{"prime-dns",		no_argument,		0,	'P'},
 		{"time",		no_argument,		0,	'Q'},
-		{"replay",		required_argument,	0,	'R'},
 		{"debug-rules",		no_argument,		0,	'S'},
 		{"re-level",		required_argument,	0,	'T'},
 		{"watchdog",		no_argument,		0,	'W'},
@@ -488,15 +475,16 @@ int main(int argc, char** argv)
 
 	enum DNS_MgrMode dns_type = DNS_DEFAULT;
 
-	dns_type = getenv("BRO_DNS_FAKE") ? DNS_FAKE : DNS_DEFAULT;
+	dns_type = bro_dns_fake() ? DNS_FAKE : DNS_DEFAULT;
 
 	RETSIGTYPE (*oldhandler)(int);
 
 	prog = argv[0];
 
-	prefixes.append(strdup(""));	// "" = "no prefix"
+	prefixes.push_back(strdup(""));	// "" = "no prefix"
 
-	char* p = getenv("BRO_PREFIXES");
+	char* p = zeekenv("ZEEK_PREFIXES");
+
 	if ( p )
 		add_to_name_list(p, ':', prefixes);
 
@@ -513,7 +501,7 @@ int main(int argc, char** argv)
 	opterr = 0;
 
 	char opts[256];
-	safe_strncpy(opts, "B:e:f:G:H:I:i:n:p:R:r:s:T:t:U:w:x:X:CFNPQSWabdghv",
+	safe_strncpy(opts, "B:e:f:G:H:I:i:n:p:r:s:T:t:U:w:X:CFNPQSWabdhv",
 		     sizeof(opts));
 
 #ifdef USE_PERFTOOLS_DEBUG
@@ -549,19 +537,19 @@ int main(int argc, char** argv)
 			break;
 
 		case 'i':
-			interfaces.append(optarg);
+			interfaces.push_back(optarg);
 			break;
 
 		case 'p':
-			prefixes.append(optarg);
+			prefixes.push_back(optarg);
 			break;
 
 		case 'r':
-			read_files.append(optarg);
+			read_files.push_back(optarg);
 			break;
 
 		case 's':
-			rule_files.append(optarg);
+			rule_files.push_back(optarg);
 			break;
 
 		case 't':
@@ -570,16 +558,12 @@ int main(int argc, char** argv)
 			break;
 
 		case 'v':
-			fprintf(stdout, "%s version %s\n", prog, bro_version());
+			fprintf(stdout, "%s version %s\n", prog, zeek_version());
 			exit(0);
 			break;
 
 		case 'w':
 			writefile = optarg;
-			break;
-
-		case 'x':
-			bst_file = optarg;
 			break;
 
 		case 'B':
@@ -626,10 +610,6 @@ int main(int argc, char** argv)
 
 		case 'Q':
 			time_bro = 1;
-			break;
-
-		case 'R':
-			events_file = optarg;
 			break;
 
 		case 'S':
@@ -744,7 +724,7 @@ int main(int argc, char** argv)
 	if ( optind == argc &&
 	     read_files.length() == 0 &&
 	     interfaces.length() == 0 &&
-	     ! (id_name || bst_file) && ! command_line_policy && ! print_plugins )
+	     ! id_name && ! command_line_policy && ! print_plugins )
 		add_input_file("-");
 
 	// Process remaining arguments. X=Y arguments indicate script
@@ -796,9 +776,6 @@ int main(int argc, char** argv)
 
 	plugin_mgr->ActivateDynamicPlugins(! bare_mode);
 
-	if ( events_file )
-		event_player = new EventPlayer(events_file);
-
 	init_event_handlers();
 
 	md5_type = new OpaqueType("md5");
@@ -810,6 +787,7 @@ int main(int argc, char** argv)
 	bloomfilter_type = new OpaqueType("bloomfilter");
 	x509_opaque_type = new OpaqueType("x509");
 	ocsp_resp_opaque_type = new OpaqueType("ocsp_resp");
+	paraglob_type = new OpaqueType("paraglob");
 
 	// The leak-checker tends to produce some false
 	// positives (memory which had already been
@@ -899,11 +877,11 @@ int main(int argc, char** argv)
 	char* s;
 	while ( (s = strsep(&tmp, " \t")) )
 		if ( *s )
-			rule_files.append(s);
+			rule_files.push_back(s);
 
 	// Append signature files defined in @load-sigs
 	for ( size_t i = 0; i < sig_files.size(); ++i )
-		rule_files.append(copy_string(sig_files[i].c_str()));
+		rule_files.push_back(copy_string(sig_files[i].c_str()));
 
 	if ( rule_files.length() > 0 )
 		{
@@ -944,8 +922,6 @@ int main(int argc, char** argv)
 	if ( dns_type != DNS_PRIME )
 		net_init(interfaces, read_files, writefile, do_watchdog);
 
-	BroFile::SetDefaultRotation(log_rotate_interval, log_max_size);
-
 	net_done = internal_handler("net_done");
 
 	if ( ! g_policy_debug )
@@ -969,19 +945,6 @@ int main(int argc, char** argv)
 
 		mgr.Drain();
 		delete dns_mgr;
-		exit(0);
-		}
-
-	// Just read state file from disk.
-	if ( bst_file )
-		{
-		FileSerializer s;
-		UnserialInfo info(&s);
-		info.print = stdout;
-		info.install_uniques = true;
-		if ( ! s.Read(&info, bst_file) )
-			reporter->Error("Failed to read events from %s\n", bst_file);
-
 		exit(0);
 		}
 
@@ -1019,28 +982,14 @@ int main(int argc, char** argv)
 	if ( zeek_init )	//### this should be a function
 		mgr.QueueEventFast(zeek_init, val_list{});
 
-	EventRegistry::string_list* dead_handlers =
+	EventRegistry::string_list dead_handlers =
 		event_registry->UnusedHandlers();
 
-	if ( dead_handlers->length() > 0 && check_for_unused_event_handlers )
+	if ( ! dead_handlers.empty() && check_for_unused_event_handlers )
 		{
-		for ( int i = 0; i < dead_handlers->length(); ++i )
-			reporter->Warning("event handler never invoked: %s", (*dead_handlers)[i]);
+		for ( const string& handler : dead_handlers )
+			reporter->Warning("event handler never invoked: %s", handler.c_str());
 		}
-
-	delete dead_handlers;
-
-	EventRegistry::string_list* alive_handlers =
-		event_registry->UsedHandlers();
-
-	if ( alive_handlers->length() > 0 && dump_used_event_handlers )
-		{
-		reporter->Info("invoked event handlers:");
-		for ( int i = 0; i < alive_handlers->length(); ++i )
-			reporter->Info("%s", (*alive_handlers)[i]);
-		}
-
-	delete alive_handlers;
 
 	if ( stmts )
 		{
@@ -1083,10 +1032,11 @@ int main(int argc, char** argv)
 	// Drain the event queue here to support the protocols framework configuring DPM
 	mgr.Drain();
 
-	if ( reporter->Errors() > 0 && ! getenv("ZEEK_ALLOW_INIT_ERRORS") )
+	if ( reporter->Errors() > 0 && ! zeekenv("ZEEK_ALLOW_INIT_ERRORS") )
 		reporter->FatalError("errors occurred while initializing");
 
 	broker_mgr->ZeekInitDone();
+	reporter->ZeekInitDone();
 	analyzer_mgr->DumpDebug();
 
 	have_pending_timers = ! reading_traces && timer_mgr->Size() > 0;
@@ -1114,8 +1064,8 @@ int main(int argc, char** argv)
 
 		double time_net_start = current_time(true);;
 
-		uint64 mem_net_start_total;
-		uint64 mem_net_start_malloced;
+		uint64_t mem_net_start_total;
+		uint64_t mem_net_start_malloced;
 
 		if ( time_bro )
 			{
@@ -1132,8 +1082,8 @@ int main(int argc, char** argv)
 
 		double time_net_done = current_time(true);;
 
-		uint64 mem_net_done_total;
-		uint64 mem_net_done_malloced;
+		uint64_t mem_net_done_total;
+		uint64_t mem_net_done_malloced;
 
 		if ( time_bro )
 			{
@@ -1162,7 +1112,7 @@ int main(int argc, char** argv)
 
 		// Close files after net_delete(), because net_delete()
 		// might write to connection content files.
-		BroFile::CloseCachedFiles();
+		BroFile::CloseOpenFiles();
 		}
 	else
 		{

@@ -1,7 +1,36 @@
 
-This document summarizes the most important changes in the current Bro
+This document summarizes the most important changes in the current Zeek
 release. For an exhaustive list of changes, see the ``CHANGES`` file
 (note that submodules, such as Broker, come with their own ``CHANGES``.)
+
+Zeek 3.1.0
+==========
+
+New Functionality
+-----------------
+
+Changed Functionality
+---------------------
+
+- The key type of ``Known::service_store`` has changed to
+  ``Known::AddrPortServTriplet`` and ``Known::services`` is now a table
+  instead of just a set.
+
+- The DNS class name for Hesiod in the ``DNS::classes`` table is now spelled
+  correctly as "C_HESIOD" instead of "C_HESOD".  For reference, this
+  class name string may appear in the dns.log file or in any custom
+  script logic that inspects the ``qclass`` field of ``DNS::Info``
+  after a ``dns_request`` event.
+
+Removed Functionality
+---------------------
+
+Deprecated Functionality
+------------------------
+
+- The C++ API typedefs for int{8,16,32,64} and uint{8,16,32,64} are deprecated
+  in favor of the real <cstdint> types they alias.  E.g. use int8_t instead of
+  int8.
 
 Zeek 3.0.0
 ==========
@@ -18,7 +47,10 @@ New Functionality
   - dns_NSEC
   - dns_NSEC3
 
-- Bro's Plugin framework now allows a patch version.  If a patch version is not
+- Added support for parsing and logging DNS SPF resource records.
+  A new ``dns_SPF_reply`` event is also available.
+
+- Zeek's Plugin framework now allows a patch version.  If a patch version is not
   provided, it will default to 0.  To specify this, modify the plugin
   Configuration class in your ``src/Plugin.cc`` and set
   ``config.version.patch``.  Note that the default plugin skeleton
@@ -79,8 +111,134 @@ New Functionality
 - The ``/<re>/i`` convenience syntax for case-insensitive patterns is now
   also allowed when specifying patterns used in signature files.
 
+- New RDP functionality.
+
+  - New events:
+    - rdp_client_network_data
+    - rdp_client_security_data
+    - rdp_client_cluster_data
+    - rdp_native_encrypted_data
+
+  - Add a new "client_channels" field to rdp.log based on data parsed from
+    the Client Network Data (TS_UD_CS_NET) packet.  The channel list is also
+    available in the new ``rdp_client_network_data`` event.
+
+- Add parsing support for TLS 1.3 pre-shared key extension.  This info
+  is available in the events: ``ssl_extension_pre_shared_key_client_hello``
+  and ``ssl_extension_pre_shared_key_server_hello``.
+
+- Added/re-wrote support for NTP.
+
+  - Parsing support for modes 1-7, with parsed structures available in
+    the ``ntp_message`` event.
+
+  - An ntp.log is produced by default, containing data extracted from
+    NTP messages with modes 1-5.
+
+- Add support for vector slicing operations.  For example::
+
+    local v = vector(1, 2, 3, 4, 5);
+    v[2:4] = vector(6, 7, 8);        # v is now [1, 2, 6, 7, 8, 5]
+    print v[:4];                     # prints [1, 2, 6, 7]
+
+- Add support for paraglob, a fairly quick data structure for matching a string
+  against a large list of patterns. For example::
+
+	local v1 = vector("*", "d?g", "*og", "d?", "d[!wl]g");
+	local p1 = paraglob_init(v1);
+	print paraglob_match(p1, "dog");
+
+- An ``expire_func`` for a table with a multi-value-index will now unroll
+  the index and take one argument for each index value. For example, for a
+  ``table[string,string] of count`` the expire function signature is:
+
+  function(t: table[string, string] of count, s: string, s2: string): interval
+
+- Zeek's anonymous functions now capture their closures by reference.
+  This means that they can use and modify variables from the scope
+  that they were generated in. For example:
+
+      local n = 3;
+      local f = function() { n += 1; };
+      f();
+      print n; # prints 4
+
+  These anonymous functions can also be serialized over Broker with
+  their closures. In order to be serialzed over Broker the receiving
+  script needs to have an identical version of the function declared.
+  For the above example, a receiving script would need to have
+  declared a function
+
+      local name = function() { n += 1; };
+
+  to be able to receive the senders function over Broker.
+
+  Functions with closures can still use the variables they have
+  captured even after they have left the scope that they were declared
+  in. For example, a simple generator function like the one below
+  works as expected.
+
+      local make_adder = function(n: count): function(m: count): count
+          {
+          return function (m: count): count
+              {
+              return n + m;
+              };
+          };
+
+      print make_adder(3)(5); # prints 8
+
+      local three = make_adder(3);
+      print three(5); # prints 8
+
+- Add ``LogAscii::enable_utf_8`` option to allow valid utf8 sequences
+  to be written directly into the ASCII logs without any escaping.
+
+- Add parsing, analysis, and logging support for MQTT protocol v3.1/v3.1.1.
+  This is not enabled by default, use ``@load policy/protocols/mqtt`` to
+  use the new MQTT analysis support.
+
+- Zeek now supports duration thresholding on connections, similarly to how it supports
+  byte and packet thresholds.
+
+  - New events:
+    - ConnThreshold::duration_threshold_crossed
+    - conn_duration_threshold_crossed
+
+  - New functions:
+    - ConnThreshold::set_duration_threshold
+    - ConnThreshold::delete_duration_threshold
+    - set_current_conn_duration_threshold
+    - get_current_conn_duration_threshold
+
 Changed Functionality
 ---------------------
+
+- The following executable names have changed (the old names will
+  continue to work, but emit a deprecation warning):
+
+  - ``bro`` is now ``zeek``
+
+  - ``bro-config`` is now ``zeek-config``
+
+  - ``broctl`` is now ``zeekctl``
+
+  - ``bro-cut`` is now ``zeek-cut``
+
+- BroControl has been completely renamed to ZeekControl.  Many installation
+  directories and files with "broctl" in their name have been changed
+  to use "zeekctl" instead.  It's expected this has been done in a way
+  that's backwards compatible with previous Bro installations.  E.g.
+  if you made customizations to the ``broctl.cfg`` file of a previous
+  installation, installing the newer Zeek version over it will retain that
+  file and even symlink the new ``zeekctl.cfg`` to it.
+
+- The default install prefix is now ``/usr/local/zeek`` instead of
+  ``/usr/local/bro``.  If you have an existing installation that used
+  the previous default and are still using the new default when upgrading,
+  we'll crate ``/usr/local/zeek`` as a symlink to ``/usr/local/bro``.
+  Certain subdirectories will also get similar treatment: ``share/bro``,
+  ``include/bro``, and ``lib/bro``.
 
 - ``$prefix/share/bro/site/local.bro`` has been renamed to
   ``local.zeek``.  If you have a ``local.bro`` file from a previous
@@ -191,7 +349,136 @@ Changed Functionality
   used it to generate their own documentation via the ``--broxygen`` flag,
   which is now named ``--zeekygen``.  Besides that, the various documentation
   in scripts has also been updated to replace Sphinx cross-referencing roles
-  and directives like ":bro:see:" with ":zeek:zee:".
+  and directives like ":bro:see:" with ":zeek:see:".
+
+- The catch-and-release and unified2 scripts are no longer loaded by
+  default.  Because there was a performance impact simply from loading
+  them and it's unlikely a majority of user make use of their features,
+  they've been moved from the scripts/base/ directory into
+  scripts/policy/ and must be manually loaded to use their
+  functionality.  The "drop" action for the notice framework is likewise
+  moved since it was implemented via catch-and-release.  As a result,
+  the default notice.log no longer contains a "dropped" field.
+
+  If you previously used the catch-and-release functionality add this:
+
+      @load policy/frameworks/netcontrol/catch-and-release
+
+  If you previously used Notice::ACTION_DROP add:
+
+      @load policy/frameworks/notice/actions/drop
+
+  If you previously used the Unified2 file analysis support add:
+
+      @load policy/files/unified2
+
+- The default value of ``peer_description`` has changed from "bro"
+  to "zeek".  This won't effect most users, except for the fact that
+  this value may appear in several log files, so any external plugins
+  that have written unit tests that compare baselines of such log
+  files may need to be updated.
+
+- The "remote_ip" field of "addr" type was removed from radius.log and
+  replaced with a field named "tunnel_client" of "string" type.  The
+  reason for this is that the Tunnel-Client-Endpoint RADIUS attribute
+  this data is derived from may also be a FQDN, not just an IP address.
+
+- The ``ssl_server_hello`` event's ``server_random`` parameter has been
+  changed to always include the full 32-byte field from the
+  ServerHello.  Previously a 4-byte timestamp and 28-byte random data
+  were parsed separately as some TLS protocol versions specified a
+  separate timestamp field as part of the full 32-byte random sequence.
+
+- The namespace used by all the builtin plugins that ship with Zeek have
+  changed to use "Zeek::" instead of "Bro::".
+
+- Any Broker topic names used in scripts shipped with Zeek that
+  previously were prefixed with "bro/" are now prefixed with "zeek/"
+  instead.
+
+  In the case where external applications were using a "bro/" topic
+  to send data into a Bro process, a Zeek process still subscribes
+  to those topics in addition to the equivalently named "zeek/" topic.
+
+  In the case where external applications were using a "bro/" topic
+  to subscribe to remote messages or query data stores, there's no
+  backwards compatibility and external applications must be changed
+  to use the new "zeek/" topic.  The thought is this change will have
+  low impact since most data published under "bro/" topic names is
+  intended for use only as a detail of implementing cluster-enabled
+  versions of various scripts.
+
+  A list of the most relevant/common topic names that could potentially
+  be used in external applications to consume/query remote data that
+  one may need to change:
+
+  - store names
+    - bro/known/services
+    - bro/known/hosts
+    - bro/known/certs
+
+  - cluster nodes
+    - bro/cluster/<node type>
+    - bro/cluster/node/<name>
+    - bro/cluster/nodeid/<id>
+
+  - logging
+    - bro/logs/<stream>
+
+- The ``resp_ref`` argument was removed from the ``ocsp_response_bytes``
+  event. ``resp_ref`` was not used by anything in the codebase and could not be
+  passed to any other functions for further processing. The remainder of the
+  ``ocsp_response_bytes`` is unchanged.
+
+- For performance reasons, processing of notices is now always
+  performed by the node on which the notice is raised rather than
+  the centralized Manager node.  This has potential incompatibilities
+  for those that relied on global state for notice policy processing.
+  It also introduces an expected race condition that may cause multiple
+  notices of the same kind that are generated within a short timespan
+  of each other on separate cluster nodes to all be logged rather
+  than suppressed and de-duplicated into a single notice.
+
+
+- to_json is now a bif, no longer a script. Loading base/utils/json.zeek is no
+  longer necessary and has been deprecated. to_json should yield much better, always
+  valid json. There are some small differences in output; unnecessary spaces are removed
+  and port values are rendered differently, now including the port and the protocol.
+
+- The output of the JSON logger now uses an external library to generate json. There
+  are small changes to the output; most visibly double numbers are now rounded slightly
+  differently. The way in which port values are rendered does _not_ change for JSON logs.
+
+- The C++-layer List, Queue, and Dict types have changed from using macros to
+  templates as well as some other API changes.
+
+  - Range-based for-loops are now supported
+
+  - The loop_over_queue macro is now removed
+
+  - PList is now a template instead of a macro, so any "PList(T)" usages in
+    external code should now use "PList<T>"
+
+  - PDict is now a template instead of a macro, so any "PDict(T)" usages in
+    external code should now use "PDict<T>"
+
+  - Generally some methods used to assume containers were only using integer
+    or pointer types, so semantics may now be slightly different to
+    either avoid copying or unsafely returning arbitrary T types by value.
+    E.g. List::remove_nth and List::get can no longer return a "null" value
+    when the provided index is out of range, so they assert instead, and
+    Queue::pop methods do not return a value at all (one must check for
+    a non-empty container before removing an element).
+
+- Google Perftools (tcmalloc) is no longer used by default on Linux
+  systems if it's found during the configuration process.
+  Use the --enable-perftools configuration flag to use tcmalloc.
+  The --disable-perftools flag is also no longer provided since
+  there's no longer any case in which tcmalloc will be used by default.
+
+- There now is a maximum number of protocol violations that can be raised by an analyzer
+  before it is disabled; the default is set to 5. This behavior is customizable using
+  ``DPD::max_violations`` and ``DPD::ignore_violations``.
 
 Removed Functionality
 ---------------------
@@ -234,6 +521,9 @@ Removed Functionality
     - ``send_state``
     - ``checkpoint_state``
     - ``rescan_state``
+    - ``log_file_name``
+    - ``open_log_file``
+    - ``disable_print_hook``
 
 - The following events were deprecated in version 2.6 or below and are completely
   removed from this release:
@@ -259,12 +549,38 @@ Removed Functionality
     - ``remote_log``
     - ``finished_send_state``
     - ``remote_pong``
+    - ``software_version_found``
+    - ``software_unparsed_version_found``
+    - ``software_parse_error``
+    - ``print_hook``
+    - ``interconn_stats``
+    - ``interconn_remove_conn``
+    - ``root_backdoor_signature_found``
+    - ``napster_signature_found``
+    - ``kazaa_signature_found``
+    - ``gaobot_signature_found``
+    - ``ftp_signature_found``
+    - ``gnutella_signature_found``
+    - ``http_signature_found``
+    - ``irc_signature_found``
+    - ``telnet_signature_found``
+    - ``ssh_signature_found``
+    - ``rlogin_signature_found``
+    - ``smtp_signature_found``
+    - ``http_proxy_signature_found``
+    - ``backdoor_stats``
+    - ``backdoor_remove_conn``
+    - ``dns_full_request``
+    - ``non_dns_request``
 
 - The following types/records were deprecated in version 2.6 or below and are
   removed from this release:
 
     - ``peer_id``
     - ``event_peer``
+    - ``packet``
+    - ``software``
+    - ``software_version``
 
 - The following configuration options were deprecated in version 2.6 or below and are
   removed from this release:
@@ -276,6 +592,27 @@ Removed Functionality
     - ``remote_trace_sync_interval``
     - ``remote_trace_sync_peers``
     - ``remote_check_sync_consistency``
+    - ``log_rotate_interval``
+    - ``log_max_size``
+    - ``log_encryption_key``
+    - ``state_dir``
+    - ``state_write_delay``
+    - ``ssl_ca_certificate``
+    - ``ssl_private_key``
+    - ``ssl_passphrase``
+    - ``suppress_local_output``
+    - ``irc_servers``
+    - ``interconn_min_interarrival``
+    - ``interconn_max_interarrival``
+    - ``interconn_max_keystroke_pkt_size``
+    - ``interconn_default_pkt_size``
+    - ``interconn_stat_period``
+    - ``interconn_stat_backoff``
+    - ``interconn_endp_stats``
+    - ``backdoor_stat_period``
+    - ``backdoor_stat_backoff``
+    - ``backdoor_endp_stats``
+    - ``chunked_io_buffer_soft_cap``
 
 - The following constants were used as part of deprecated functionality in version 2.6
   or below and are removed from this release:
@@ -292,9 +629,40 @@ Removed Functionality
 - Broccoli, which had been deprecated in version 2.6 and was no longer built by default
   was removed from the source tree.
 
-- Support for the &persistent and the &synchronized attributes, which were deprecated
-  in Bro 2.6, was removed. The ``-g`` command-line option (dump-config) which relied on
-  this functionality was also removed.
+- Support for the &persistent, &synchronized, &mergeable, &encrypt, &rotate_interval,
+  and &rotate_size attributes, which were deprecated in Bro 2.6, was removed. The ``-g``
+  command-line option (dump-config) which relied on this functionality was also removed.
+
+- Functionality for writing state updates for variables with the
+  &synchronized attribute was removed. This entails the
+  ``-x`` command-line option (print-state) as well as the
+  ``capture_state_updates`` function.
+
+- Removed the BroControl ``update`` command, which was deprecated in Bro 2.6.
+
+- Functionality for writing/reading binary event streams was
+  removed. This functionality relied on the old communication code
+  anc was basically untested. The ``-R`` command-line option (replay)
+  as well as the ``capture_events`` function were removed.
+
+- Removed p0f (passive OS fingerprinting) support. The version of
+  p0f shipped with zeek was ancient, probably did not give
+  any reliable support anymore and did not offer a clear
+  upgrade path. The ``OS_version_found`` event as well as the
+  ``generate_OS_version_event`` configuration option were removed.
+
+- Removed the ``max_files_in_cache`` option and the associated
+  "file caching" feature it's associated with. That feature allowed
+  one to open many scripting-layer ``file`` objects and potentially
+  bypass the operating system's resource limits for open files.
+  This is typically not necessary and it's a problem that is more
+  appropriately addressed at the system configuration level.
+
+- Removed the InterConn analyzer.
+
+- Removed the BackDoor analyzer.
+
+- Removed ``List::sortedinsert`` from the C++ API.
 
 Deprecated Functionality
 ------------------------
@@ -310,10 +678,11 @@ Deprecated Functionality
   such that existing code will not break, but will emit a deprecation
   warning.
 
-- The ``rotate_file``, ``rotate_file_by_name`` and ``calc_next_rotate`` functions
-  were marked as deprecated. These functions were used with the old pre-2.0 logging
-  framework and are no longer used. They also were marked as deprecated in their
-  documentation, however the functions themselves did not carry the deprecation marker.
+- The ``bro_is_terminating`` and ``bro_version`` function are deprecated and
+  replaced by functions named ``zeek_is_terminating`` and ``zeek_version``.
+
+- The ``List::insert`` method from the C++ API is deprecated, use
+  ``List::push_front`` instead.
 
 Bro 2.6
 =======

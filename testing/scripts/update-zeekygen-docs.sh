@@ -1,12 +1,12 @@
 #! /usr/bin/env bash
 
-unset BRO_DISABLE_BROXYGEN
+unset ZEEK_DISABLE_ZEEKYGEN;
 
 # If running this from btest, unset any of the environment
 # variables that alter default script values.
-unset BRO_DEFAULT_LISTEN_ADDRESS
-unset BRO_DEFAULT_LISTEN_RETRY
-unset BRO_DEFAULT_CONNECT_RETRY
+unset ZEEK_DEFAULT_LISTEN_ADDRESS;
+unset ZEEK_DEFAULT_LISTEN_RETRY;
+unset ZEEK_DEFAULT_CONNECT_RETRY;
 
 dir="$( cd "$( dirname "$0" )" && pwd )"
 source_dir="$( cd $dir/../.. && pwd )"
@@ -25,12 +25,12 @@ case $output_dir in
 esac
 
 cd $build_dir
-. bro-path-dev.sh
-export BRO_SEED_FILE=$source_dir/testing/btest/random.seed
+. zeek-path-dev.sh
+export ZEEK_SEED_FILE=$source_dir/testing/btest/random.seed
 
 function run_zeek
     {
-    ZEEK_ALLOW_INIT_ERRORS=1 bro -X $conf_file zeekygen >/dev/null 2>$zeek_error_file
+    ZEEK_ALLOW_INIT_ERRORS=1 zeek -X $conf_file zeekygen >/dev/null 2>$zeek_error_file
 
     if [ $? -ne 0 ]; then
         echo "Failed running zeek with zeekygen config file $conf_file"

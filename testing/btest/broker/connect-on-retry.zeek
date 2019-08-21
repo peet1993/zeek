@@ -1,7 +1,7 @@
 # @TEST-PORT: BROKER_PORT
 #
-# @TEST-EXEC: btest-bg-run recv "bro -B broker -b ../recv.zeek >recv.out"
-# @TEST-EXEC: btest-bg-run send "bro -B broker -b ../send.zeek >send.out"
+# @TEST-EXEC: btest-bg-run recv "zeek -B broker -b ../recv.zeek >recv.out"
+# @TEST-EXEC: btest-bg-run send "zeek -B broker -b ../send.zeek >send.out"
 #
 # @TEST-EXEC: btest-bg-wait 45
 # @TEST-EXEC: btest-diff recv/recv.out
@@ -18,8 +18,8 @@ global ping: event(msg: string, c: count);
 
 event zeek_init()
     {
-    Broker::subscribe("bro/event/my_topic");
-    Broker::auto_publish("bro/event/my_topic", ping);
+    Broker::subscribe("zeek/event/my_topic");
+    Broker::auto_publish("zeek/event/my_topic", ping);
     Broker::peer("127.0.0.1", to_port(getenv("BROKER_PORT")));
     }
 
@@ -67,8 +67,8 @@ event delayed_listen()
 
 event zeek_init()
         {
-        Broker::subscribe("bro/event/my_topic");
-	Broker::auto_publish("bro/event/my_topic", pong);
+        Broker::subscribe("zeek/event/my_topic");
+        Broker::auto_publish("zeek/event/my_topic", pong);
 	schedule 5secs { delayed_listen() };
         }
 

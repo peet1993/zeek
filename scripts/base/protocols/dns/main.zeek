@@ -116,7 +116,7 @@ export {
 	## Give up trying to match pending DNS queries or replies for a given
 	## query/transaction ID once this number of unmatched queries or replies
 	## is reached (this shouldn't happen unless either the DNS server/resolver
-	## is broken, Bro is not seeing all the DNS traffic, or an AXFR query
+	## is broken, Zeek is not seeing all the DNS traffic, or an AXFR query
 	## response is ongoing).
 	option max_pending_msgs = 50;
 
@@ -456,6 +456,21 @@ event dns_TXT_reply(c: connection, msg: dns_msg, ans: dns_answer, strs: string_v
 	hook DNS::do_reply(c, msg, ans, txt_strings);
 	}
 
+event dns_SPF_reply(c: connection, msg: dns_msg, ans: dns_answer, strs: string_vec) &priority=5
+	{
+	local spf_strings: string = "";
+
+	for ( i in strs )
+		{
+		if ( i > 0 )
+			spf_strings += " ";
+
+		spf_strings += fmt("SPF %d %s", |strs[i]|, strs[i]);
+		}
+
+	hook DNS::do_reply(c, msg, ans, spf_strings);
+	}
+
 event dns_AAAA_reply(c: connection, msg: dns_msg, ans: dns_answer, a: addr) &priority=5
 	{
 	hook DNS::do_reply(c, msg, ans, fmt("%s", a));
@@ -561,7 +576,7 @@ event connection_state_remove(c: connection) &priority=-5
 	if ( ! c?$dns_state )
 		return;
 
-	# If Bro is expiring state, we should go ahead and log all unmatched
+	# If Zeek is expiring state, we should go ahead and log all unmatched
 	# queries and replies now.
 	if( c$dns_state?$pending_query )
 		Log::write(DNS::LOG, c$dns_state$pending_query);

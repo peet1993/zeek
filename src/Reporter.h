@@ -42,7 +42,7 @@ protected:
 class Reporter {
 public:
 	using IPPair = std::pair<IPAddr, IPAddr>;
-	using WeirdCountMap = std::unordered_map<std::string, uint64>;
+	using WeirdCountMap = std::unordered_map<std::string, uint64_t>;
 	using WeirdFlowMap = std::map<IPPair, WeirdCountMap>;
 	using WeirdSet = std::unordered_set<std::string>;
 
@@ -144,7 +144,7 @@ public:
 	 * Return the total number of weirds generated (counts weirds before
 	 * any rate-limiting occurs).
 	 */
-	uint64 GetWeirdCount() const
+	uint64_t GetWeirdCount() const
 		{ return weird_count; }
 
 	/**
@@ -177,7 +177,7 @@ public:
 	 *
 	 * @return weird sampling threshold.
 	 */
-	uint64 GetWeirdSamplingThreshold() const
+	uint64_t GetWeirdSamplingThreshold() const
 		{
 		return weird_sampling_threshold;
 		}
@@ -187,7 +187,7 @@ public:
 	 *
 	 * @param weird_sampling_threshold New weird sampling threshold.
 	 */
-	void SetWeirdSamplingThreshold(uint64 weird_sampling_threshold)
+	void SetWeirdSamplingThreshold(uint64_t weird_sampling_threshold)
 		{
 		this->weird_sampling_threshold = weird_sampling_threshold;
 		}
@@ -197,7 +197,7 @@ public:
 	 *
 	 * @return weird sampling rate.
 	 */
-	uint64 GetWeirdSamplingRate() const
+	uint64_t GetWeirdSamplingRate() const
 		{
 		return weird_sampling_rate;
 		}
@@ -207,7 +207,7 @@ public:
 	 *
 	 * @param weird_sampling_rate New weird sampling rate.
 	 */
-	void SetWeirdSamplingRate(uint64 weird_sampling_rate)
+	void SetWeirdSamplingRate(uint64_t weird_sampling_rate)
 		{
 		this->weird_sampling_rate = weird_sampling_rate;
 		}
@@ -233,6 +233,13 @@ public:
 		this->weird_sampling_duration = weird_sampling_duration;
 		}
 
+	/**
+	 * Called after zeek_init() and toggles whether messages may stop being
+	 * emitted to stderr.
+	 */
+	void ZeekInitDone()
+		{ after_zeek_init = true; }
+
 private:
 	void DoLog(const char* prefix, EventHandlerPtr event, FILE* out,
 		   Connection* conn, val_list* addl, bool location, bool time,
@@ -248,23 +255,27 @@ private:
 	bool PermitNetWeird(const char* name);
 	bool PermitFlowWeird(const char* name, const IPAddr& o, const IPAddr& r);
 
+	bool EmitToStderr(bool flag)
+		{ return flag || ! after_zeek_init; }
+
 	int errors;
 	bool via_events;
 	int in_error_handler;
 	bool info_to_stderr;
 	bool warnings_to_stderr;
 	bool errors_to_stderr;
+	bool after_zeek_init;
 
 	std::list<std::pair<const Location*, const Location*> > locations;
 
-	uint64 weird_count;
+	uint64_t weird_count;
 	WeirdCountMap weird_count_by_type;
 	WeirdCountMap net_weird_state;
 	WeirdFlowMap flow_weird_state;
 
 	WeirdSet weird_sampling_whitelist;
-	uint64 weird_sampling_threshold;
-	uint64 weird_sampling_rate;
+	uint64_t weird_sampling_threshold;
+	uint64_t weird_sampling_rate;
 	double weird_sampling_duration;
 
 };

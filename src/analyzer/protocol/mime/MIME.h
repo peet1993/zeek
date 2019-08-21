@@ -84,7 +84,6 @@ protected:
 };
 
 
-// declare(PList, MIME_Header);
 typedef vector<MIME_Header*> MIME_HeaderList;
 
 class MIME_Entity {
@@ -173,6 +172,7 @@ protected:
 
 	MIME_Message* message;
 	bool delay_adding_implicit_CRLF;
+	bool want_all_headers;
 };
 
 // The reason I separate MIME_Message as an abstract class is to
@@ -258,7 +258,7 @@ protected:
 
 	BroString* data_buffer;
 
-	uint64 cur_entity_len;
+	uint64_t cur_entity_len;
 	string cur_entity_id;
 };
 

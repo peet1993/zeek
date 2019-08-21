@@ -52,8 +52,6 @@ static void input_hash_delete_func(void* val)
 	delete h;
 	}
 
-declare(PDict, InputHash);
-
 /**
  * Base stuff that every stream can do.
  */
@@ -109,8 +107,8 @@ public:
 	RecordType* rtype;
 	RecordType* itype;
 
-	PDict(InputHash)* currDict;
-	PDict(InputHash)* lastDict;
+	PDict<InputHash>* currDict;
+	PDict<InputHash>* lastDict;
 
 	Func* pred;
 
@@ -155,31 +153,31 @@ Manager::EventStream::EventStream()
 
 Manager::EventStream::~EventStream()
 	{
-        if ( fields )
-                Unref(fields);
+	if ( fields )
+		Unref(fields);
 	}
 
 Manager::TableStream::~TableStream()
 	{
-        if ( tab )
-	        Unref(tab);
+	if ( tab )
+		Unref(tab);
 
-        if ( itype )
-	        Unref(itype);
+	if ( itype )
+		Unref(itype);
 
 	if ( rtype ) // can be 0 for sets
 		Unref(rtype);
 
-        if ( currDict != 0 )
+	if ( currDict != 0 )
 		{
 		currDict->Clear();
-	        delete currDict;
+		delete currDict;
 		}
 
-        if ( lastDict != 0 )
+	if ( lastDict != 0 )
 		{
 		lastDict->Clear();;
-	        delete lastDict;
+		delete lastDict;
 		}
 	}
 
@@ -224,7 +222,7 @@ ReaderBackend* Manager::CreateBackend(ReaderFrontend* frontend, EnumVal* tag)
 	return backend;
 	}
 
-// Create a new input reader object to be used at whomevers leisure lateron.
+// Create a new input reader object to be used at whomevers leisure later on.
 bool Manager::CreateStream(Stream* info, RecordVal* description)
 	{
 	RecordType* rtype = description->Type()->AsRecordType();
@@ -232,7 +230,7 @@ bool Manager::CreateStream(Stream* info, RecordVal* description)
 		|| same_type(rtype, BifType::Record::Input::EventDescription, 0)
 		|| same_type(rtype, BifType::Record::Input::AnalysisDescription, 0) ) )
 		{
-		reporter->Error("Streamdescription argument not of right type for new input stream");
+		reporter->Error("Stream description argument not of right type for new input stream");
 		return false;
 		}
 
@@ -547,6 +545,7 @@ bool Manager::CreateTableStream(RecordVal* fval)
 
 	Val *want_record = fval->Lookup("want_record", true);
 
+	if ( val )
 		{
 		const BroType* table_yield = dst->Type()->AsTableType()->YieldType();
 		const BroType* compare_type = val;
@@ -562,6 +561,17 @@ bool Manager::CreateTableStream(RecordVal* fval)
 			table_yield->Describe(&desc2);
 			reporter->Error("Input stream %s: Table type does not match value type. Need type '%s', got '%s'", stream_name.c_str(),
 					desc1.Description(), desc2.Description());
+			return false;
+			}
+		}
+	else
+		{
+		if ( ! dst->Type()->IsSet() )
+			{
+			reporter->Error("Input stream %s: 'destination' field is a table,"
+			                " but 'val' field is not provided"
+			                " (did you mean to use a set instead of a table?)",
+			                stream_name.c_str());
 			return false;
 			}
 		}
@@ -691,9 +701,9 @@ bool Manager::CreateTableStream(RecordVal* fval)
 	stream->itype = idx->AsRecordType();
 	stream->event = event ? event_registry->Lookup(event->Name()) : 0;
 	stream->error_event = error_event ? event_registry->Lookup(error_event->Name()) : nullptr;
-	stream->currDict = new PDict(InputHash);
+	stream->currDict = new PDict<InputHash>;
 	stream->currDict->SetDeleteFunc(input_hash_delete_func);
-	stream->lastDict = new PDict(InputHash);
+	stream->lastDict = new PDict<InputHash>;
 	stream->lastDict->SetDeleteFunc(input_hash_delete_func);
 	stream->want_record = ( want_record->InternalInt() == 1 );
 
@@ -812,6 +822,7 @@ bool Manager::IsCompatibleType(BroType* t, bool atomic_only)
 	case TYPE_INTERVAL:
 	case TYPE_ENUM:
 	case TYPE_STRING:
+	case TYPE_PATTERN:
 		return true;
 
 	case TYPE_RECORD:
@@ -1412,7 +1423,7 @@ void Manager::EndCurrentSend(ReaderFrontend* reader)
 	delete(stream->lastDict);
 
 	stream->lastDict = stream->currDict;
-	stream->currDict = new PDict(InputHash);
+	stream->currDict = new PDict<InputHash>;
 	stream->currDict->SetDeleteFunc(input_hash_delete_func);
 
 #ifdef DEBUG
@@ -1814,7 +1825,7 @@ bool Manager::CallPred(Func* pred_func, const int numvals, ...) const
 	va_list lP;
 	va_start(lP, numvals);
 	for ( int i = 0; i < numvals; i++ )
-		vl.append( va_arg(lP, Val*) );
+		vl.push_back( va_arg(lP, Val*) );
 
 	va_end(lP);
 
@@ -1841,7 +1852,7 @@ bool Manager::SendEvent(ReaderFrontend* reader, const string& name, const int nu
 		return false;
 		}
 
-	EventHandler* handler = event_registry->Lookup(name.c_str());
+	EventHandler* handler = event_registry->Lookup(name);
 	if ( handler == 0 )
 		{
 		Warning(i, "Event %s not found", name.c_str());
@@ -1870,7 +1881,7 @@ bool Manager::SendEvent(ReaderFrontend* reader, const string& name, const int nu
 	for ( int j = 0; j < num_vals; j++)
 		{
 		Val* v = ValueToVal(i, vals[j], convert_error);
-		vl.append(v);
+		vl.push_back(v);
 		if ( v && ! convert_error && ! same_type(type->FieldType(j), v->Type()) )
 			{
 			convert_error = true;
@@ -1882,8 +1893,8 @@ bool Manager::SendEvent(ReaderFrontend* reader, const string& name, const int nu
 
 	if ( convert_error )
 		{
-		loop_over_list(vl, i)
-			Unref(vl[i]);
+		for ( const auto& v : vl )
+			Unref(v);
 
 		return false;
 		}
@@ -1905,7 +1916,7 @@ void Manager::SendEvent(EventHandlerPtr ev, const int numvals, ...) const
 	va_list lP;
 	va_start(lP, numvals);
 	for ( int i = 0; i < numvals; i++ )
-		vl.append( va_arg(lP, Val*) );
+		vl.push_back( va_arg(lP, Val*) );
 
 	va_end(lP);
 
@@ -1922,7 +1933,7 @@ void Manager::SendEvent(EventHandlerPtr ev, list<Val*> events) const
 #endif
 
 	for ( list<Val*>::iterator i = events.begin(); i != events.end(); i++ )
-		vl.append( *i );
+		vl.push_back( *i );
 
 	mgr.QueueEvent(ev, std::move(vl), SOURCE_LOCAL);
 	}
@@ -2062,6 +2073,12 @@ int Manager::GetValueLength(const Value* val) const
 		}
 		break;
 
+	case TYPE_PATTERN:
+		{
+		length += strlen(val->val.pattern_text_val) + 1;
+		break;
+		}
+
 	case TYPE_TABLE:
 		{
 		for ( int i = 0; i < val->val.set_val.size; i++ )
@@ -2178,6 +2195,14 @@ int Manager::CopyValue(char *data, const int startpos, const Value* val) const
 		       (const char*) &(val->val.subnet_val.length), lengthlength);
 		length += lengthlength;
 
+		return length;
+		}
+
+	case TYPE_PATTERN:
+		{
+		// include null-terminator
+		int length = strlen(val->val.pattern_text_val) + 1;
+		memcpy(data + startpos, val->val.pattern_text_val, length);
 		return length;
 		}
 
@@ -2338,6 +2363,13 @@ Val* Manager::ValueToVal(const Stream* i, const Value* val, BroType* request_typ
 		return subnetval;
 		}
 
+	case TYPE_PATTERN:
+		{
+		RE_Matcher* re = new RE_Matcher(val->val.pattern_text_val);
+		re->Compile();
+		return new PatternVal(re);
+		}
+
 	case TYPE_TABLE:
 		{
 		// all entries have to have the same type...
@@ -2478,6 +2510,13 @@ Val* Manager::ValueToVal(const Stream* i, const Value* val, bool& have_error) co
 		SubNetVal* subnetval = new SubNetVal(*addr, val->val.subnet_val.length);
 		delete addr;
 		return subnetval;
+		}
+
+	case TYPE_PATTERN:
+		{
+		RE_Matcher* re = new RE_Matcher(val->val.pattern_text_val);
+		re->Compile();
+		return new PatternVal(re);
 		}
 
 	case TYPE_TABLE:

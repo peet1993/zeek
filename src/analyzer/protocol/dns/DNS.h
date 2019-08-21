@@ -63,6 +63,8 @@ typedef enum {
 	TYPE_DNSKEY = 48,	///< DNS Key record (RFC 4034)
 	TYPE_DS = 43,		///< Delegation signer (RFC 4034)
 	TYPE_NSEC3 = 50,
+	// Obsoleted
+	TYPE_SPF = 99,          ///< Alternative: storing SPF data in TXT records, using the same format (RFC 4408). Support for it was discontinued in RFC 7208
 	// The following are only valid in queries.
 	TYPE_AXFR = 252,
 	TYPE_ALL = 255,
@@ -141,7 +143,7 @@ struct RRSIG_DATA {
 	unsigned short type_covered;	// 16 : ExtractShort(data, len)
 	unsigned short algorithm;		// 8
 	unsigned short labels;			// 8
-	uint32 orig_ttl;				// 32
+	uint32_t orig_ttl;				// 32
 	unsigned long sig_exp;			// 32
 	unsigned long sig_incep;		// 32
 	unsigned short key_tag;			//16
@@ -206,7 +208,7 @@ public:
 	StringVal* query_name;
 	RR_Type atype;
 	int aclass;	///< normally = 1, inet
-	uint32 ttl;
+	uint32_t ttl;
 
 	DNS_AnswerType answer_type;
 	int skip_event;		///< if true, don't generate corresponding events
@@ -247,8 +249,8 @@ protected:
 			 u_char*& label, int& label_len,
 			 const u_char* msg_start);
 
-	uint16 ExtractShort(const u_char*& data, int& len);
-	uint32 ExtractLong(const u_char*& data, int& len);
+	uint16_t ExtractShort(const u_char*& data, int& len);
+	uint32_t ExtractLong(const u_char*& data, int& len);
 	void ExtractOctets(const u_char*& data, int& len, BroString** p);
 
 	BroString* ExtractStream(const u_char*& data, int& len, int sig_len);
@@ -280,6 +282,9 @@ protected:
 	int ParseRR_HINFO(DNS_MsgInfo* msg,
 				const u_char*& data, int& len, int rdlength);
 	int ParseRR_TXT(DNS_MsgInfo* msg,
+				const u_char*& data, int& len, int rdlength,
+				const u_char* msg_start);
+	int ParseRR_SPF(DNS_MsgInfo* msg,
 				const u_char*& data, int& len, int rdlength,
 				const u_char* msg_start);
 	int ParseRR_CAA(DNS_MsgInfo* msg,
@@ -348,7 +353,7 @@ public:
 	~DNS_Analyzer() override;
 
 	void DeliverPacket(int len, const u_char* data, bool orig,
-					uint64 seq, const IP_Hdr* ip, int caplen) override;
+					uint64_t seq, const IP_Hdr* ip, int caplen) override;
 
 	void Init() override;
 	void Done() override;

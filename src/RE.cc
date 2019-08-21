@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <stdlib.h>
 #include <utility>
@@ -9,7 +9,7 @@
 #include "DFA.h"
 #include "CCL.h"
 #include "EquivClass.h"
-#include "Serializer.h"
+#include "Reporter.h"
 
 CCL* curr_ccl = 0;
 
@@ -149,7 +149,7 @@ int Specific_RE_Matcher::Compile(int lazy)
 
 int Specific_RE_Matcher::CompileSet(const string_list& set, const int_list& idx)
 	{
-	if ( set.length() != idx.length() )
+	if ( (size_t)set.length() != idx.size() )
 		reporter->InternalError("compileset: lengths of sets differ");
 
 	rem = this;
@@ -194,9 +194,13 @@ int Specific_RE_Matcher::CompileSet(const string_list& set, const int_list& idx)
 	return 1;
 	}
 
-const char* Specific_RE_Matcher::LookupDef(const char* def)
+string Specific_RE_Matcher::LookupDef(const string& def)
 	{
-	return defs.Lookup(def);
+	const auto& iter = defs.find(def);
+	if ( iter != defs.end() )
+		return iter->second;
+
+	return string();
 	}
 
 int Specific_RE_Matcher::MatchAll(const char* s)
@@ -412,10 +416,21 @@ unsigned int Specific_RE_Matcher::MemoryAllocation() const
 	for ( int i = 0; i < ccl_list.length(); ++i )
 		size += ccl_list[i]->MemoryAllocation();
 
+	size += pad_size(sizeof(CCL*) * ccl_dict.size());
+	for ( const auto& entry : ccl_dict )
+		{
+		size += padded_sizeof(std::string) + pad_size(sizeof(std::string::value_type) * entry.first.size());
+		size += entry.second->MemoryAllocation();
+		}
+
+	for ( const auto& entry : defs )
+		{
+		size += padded_sizeof(std::string) + pad_size(sizeof(std::string::value_type) * entry.first.size());
+		size += padded_sizeof(std::string) + pad_size(sizeof(std::string::value_type) * entry.second.size());
+		}
+
 	return size + padded_sizeof(*this)
 		+ (pattern_text ? pad_size(strlen(pattern_text) + 1) : 0)
-		+ defs.MemoryAllocation() - padded_sizeof(defs) // FIXME: count content
-		+ ccl_dict.MemoryAllocation() - padded_sizeof(ccl_dict) // FIXME: count content
 		+ ccl_list.MemoryAllocation() - padded_sizeof(ccl_list)
 		+ equiv_class.Size() - padded_sizeof(EquivClass)
 		+ (dfa ? dfa->MemoryAllocation() : 0) // this is ref counted; consider the bytes here?
@@ -468,57 +483,6 @@ int RE_Matcher::Compile(int lazy)
 	{
 	return re_anywhere->Compile(lazy) && re_exact->Compile(lazy);
 	}
-
-bool RE_Matcher::Serialize(SerialInfo* info) const
-	{
-	return SerialObj::Serialize(info);
-	}
-
-RE_Matcher* RE_Matcher::Unserialize(UnserialInfo* info)
-	{
-	return (RE_Matcher*) SerialObj::Unserialize(info, SER_RE_MATCHER);
-	}
-
-IMPLEMENT_SERIAL(RE_Matcher, SER_RE_MATCHER);
-
-bool RE_Matcher::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_RE_MATCHER, SerialObj);
-	return SERIALIZE(re_anywhere->PatternText())
-			&& SERIALIZE(re_exact->PatternText());
-	}
-
-bool RE_Matcher::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(SerialObj);
-
-	re_anywhere = new Specific_RE_Matcher(MATCH_ANYWHERE);
-	re_exact = new Specific_RE_Matcher(MATCH_EXACTLY);
-
-	const char* pat;
-	if ( ! UNSERIALIZE_STR(&pat, 0) )
-		return false;
-
-	re_anywhere->SetPat(pat);
-	if ( ! re_anywhere->Compile() )
-		{
-		info->s->Error(fmt("Can't compile regexp '%s'", pat));
-		return false;
-		}
-
-	if ( ! UNSERIALIZE_STR(&pat, 0) )
-		return false;
-
-	re_exact->SetPat(pat);
-	if ( ! re_exact->Compile() )
-		{
-		info->s->Error(fmt("Can't compile regexp '%s'", pat));
-		return false;
-		}
-
-	return true;
-	}
-
 
 static RE_Matcher* matcher_merge(const RE_Matcher* re1, const RE_Matcher* re2,
 				const char* merge_op)

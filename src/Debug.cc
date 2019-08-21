@@ -1,6 +1,6 @@
 // Debugging support for Bro policy files.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -27,7 +27,7 @@ using namespace std;
 bool g_policy_debug = false;
 DebuggerState g_debugger_state;
 TraceState g_trace_state;
-PDict(Filemap) g_dbgfilemaps;
+std::map<string, Filemap*> g_dbgfilemaps;
 
 // These variables are used only to decide whether or not to print the
 // current context; you don't want to do it after a step or next
@@ -320,12 +320,11 @@ vector<ParseLocationRec> parse_location_string(const string& s)
 	vector<ParseLocationRec> result;
 	result.push_back(ParseLocationRec());
 	ParseLocationRec& plr = result[0];
-	const char* full_filename = 0;
 
 	// If plrFileAndLine, set this to the filename you want; for
 	// memory management reasons, the real filename is set when looking
 	// up the line number to find the corresponding statement.
-	const char* loc_filename = 0;
+	std::string loc_filename;
 
 	if ( sscanf(s.c_str(), "%d", &plr.line) )
 		{ // just a line number (implicitly referring to the current file)
@@ -357,31 +356,29 @@ vector<ParseLocationRec> parse_location_string(const string& s)
 				return result;
 				}
 
-			loc_filename = copy_string(path.c_str());
+			loc_filename = path;
 			plr.type = plrFileAndLine;
 			}
 		}
 
 	if ( plr.type == plrFileAndLine )
 		{
-		Filemap* map = g_dbgfilemaps.Lookup(loc_filename);
-		if ( ! map )
+		auto iter = g_dbgfilemaps.find(loc_filename);
+		if ( iter == g_dbgfilemaps.end() )
 			reporter->InternalError("Policy file %s should have been loaded\n",
-					loc_filename);
+					loc_filename.data());
 
-		if ( plr.line > how_many_lines_in(loc_filename) )
+		if ( plr.line > how_many_lines_in(loc_filename.data()) )
 			{
-			debug_msg("No line %d in %s.\n", plr.line, loc_filename);
-			delete [] full_filename;
+			debug_msg("No line %d in %s.\n", plr.line, loc_filename.data());
 			plr.type = plrUnknown;
 			return result;
 			}
 
 		StmtLocMapping* hit = 0;
-		loop_over_queue(*map, i)
+		for ( const auto entry : *(iter->second) )
 			{
-			StmtLocMapping* entry = (*map)[i];
-			plr.filename = (*map)[i]->Loc().filename;
+			plr.filename = entry->Loc().filename;
 
 			if ( entry->Loc().first_line > plr.line )
 				break;
@@ -389,7 +386,7 @@ vector<ParseLocationRec> parse_location_string(const string& s)
 			if ( plr.line >= entry->Loc().first_line &&
 			     plr.line <= entry->Loc().last_line )
 				{
-				hit = (*map)[i];
+				hit = entry;
 				break;
 				}
 			}
@@ -400,7 +397,6 @@ vector<ParseLocationRec> parse_location_string(const string& s)
 			plr.stmt = 0;
 		}
 
-	delete [] full_filename;
 	return result;
 	}
 
@@ -721,7 +717,7 @@ static char* get_prompt(bool reset_counter = false)
 	if ( reset_counter )
 		counter = 0;
 
-	safe_snprintf(prompt, sizeof(prompt), "(Bro [%d]) ", counter++);
+	safe_snprintf(prompt, sizeof(prompt), "(Zeek [%d]) ", counter++);
 
 	return prompt;
 	}

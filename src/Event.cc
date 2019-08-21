@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include "Event.h"
 #include "Func.h"
@@ -10,8 +10,8 @@
 
 EventMgr mgr;
 
-uint64 num_events_queued = 0;
-uint64 num_events_dispatched = 0;
+uint64_t num_events_queued = 0;
+uint64_t num_events_dispatched = 0;
 
 Event::Event(EventHandlerPtr arg_handler, val_list arg_args,
 		SourceID arg_src, analyzer::ID arg_aid, TimerMgr* arg_mgr,
@@ -57,12 +57,6 @@ void Event::Dispatch(bool no_remote)
 	{
 	if ( src == SOURCE_BROKER )
 		no_remote = true;
-
-	if ( event_serializer )
-		{
-		SerialInfo info(event_serializer);
-		event_serializer->Serialize(&info, handler->Name(), &args);
-		}
 
 	if ( handler->ErrorHandler() )
 		reporter->BeginErrorHandler();

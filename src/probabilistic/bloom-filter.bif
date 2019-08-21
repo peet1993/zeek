@@ -23,7 +23,7 @@ module GLOBAL;
 ##
 ## name: A name that uniquely identifies and seeds the Bloom filter. If empty,
 ##       the filter will use :zeek:id:`global_hash_seed` if that's set, and
-##       otherwise use a local seed tied to the current Bro process. Only
+##       otherwise use a local seed tied to the current Zeek process. Only
 ##       filters with the same seed can be merged with
 ##       :zeek:id:`bloomfilter_merge`.
 ##
@@ -60,7 +60,7 @@ function bloomfilter_basic_init%(fp: double, capacity: count,
 ##
 ## name: A name that uniquely identifies and seeds the Bloom filter. If empty,
 ##       the filter will use :zeek:id:`global_hash_seed` if that's set, and
-##       otherwise use a local seed tied to the current Bro process. Only
+##       otherwise use a local seed tied to the current Zeek process. Only
 ##       filters with the same seed can be merged with
 ##       :zeek:id:`bloomfilter_merge`.
 ##
@@ -104,7 +104,7 @@ function bloomfilter_basic_init2%(k: count, cells: count,
 ##
 ## name: A name that uniquely identifies and seeds the Bloom filter. If empty,
 ##       the filter will use :zeek:id:`global_hash_seed` if that's set, and
-##       otherwise use a local seed tied to the current Bro process. Only
+##       otherwise use a local seed tied to the current Zeek process. Only
 ##       filters with the same seed can be merged with
 ##       :zeek:id:`bloomfilter_merge`.
 ##
@@ -126,7 +126,7 @@ function bloomfilter_counting_init%(k: count, cells: count, max: count,
 
 	const Hasher* h = new DefaultHasher(k, seed);
 
-	uint16 width = 1;
+	uint16_t width = 1;
 	while ( max >>= 1 )
 		++width;
 
@@ -180,7 +180,7 @@ function bloomfilter_lookup%(bf: opaque of bloomfilter, x: any%): count
 		reporter->Error("incompatible Bloom filter types");
 
 	else
-		return val_mgr->GetCount(static_cast<uint64>(bfv->Count(x)));
+		return val_mgr->GetCount(static_cast<uint64_t>(bfv->Count(x)));
 
 	return val_mgr->GetCount(0);
 	%}
@@ -206,7 +206,7 @@ function bloomfilter_clear%(bf: opaque of bloomfilter%): any
 
 ## Merges two Bloom filters.
 ##
-## .. note:: Currently Bloom filters created by different Bro instances cannot
+## .. note:: Currently Bloom filters created by different Zeek instances cannot
 ##    be merged. In the future, this will be supported as long as both filters
 ##    are created with the same name.
 ##

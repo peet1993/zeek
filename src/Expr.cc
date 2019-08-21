@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include "Expr.h"
 #include "Event.h"
@@ -14,6 +14,7 @@
 #include "Traverse.h"
 #include "Trigger.h"
 #include "IPAddr.h"
+#include "digest.h"
 
 #include "broker/Data.h"
 
@@ -27,12 +28,12 @@ const char* expr_name(BroExprTag t)
 		"&", "|", "^",
 		"&&", "||",
 		"<", "<=", "==", "!=", ">=", ">", "?:", "ref",
-		"=", "~", "[]", "$", "?$", "[=]",
+		"=", "[]", "$", "?$", "[=]",
 		"table()", "set()", "vector()",
 		"$=", "in", "<<>>",
-		"()", "event", "schedule",
+		"()", "function()", "event", "schedule",
 		"coerce", "record_coerce", "table_coerce",
-		"sizeof", "flatten", "cast", "is"
+		"sizeof", "flatten", "cast", "is", "[:]="
 	};
 
 	if ( int(t) >= NUM_EXPRS )
@@ -97,7 +98,7 @@ void Expr::EvalIntoAggregate(const BroType* /* t */, Val* /* aggr */,
 	Internal("Expr::EvalIntoAggregate called");
 	}
 
-void Expr::Assign(Frame* /* f */, Val* /* v */, Opcode /* op */)
+void Expr::Assign(Frame* /* f */, Val* /* v */)
 	{
 	Internal("Expr::Assign called");
 	}
@@ -201,56 +202,6 @@ void Expr::RuntimeErrorWithCallStack(const std::string& msg) const
 		}
 	}
 
-bool Expr::Serialize(SerialInfo* info) const
-	{
-	return SerialObj::Serialize(info);
-	}
-
-Expr* Expr::Unserialize(UnserialInfo* info, BroExprTag want)
-	{
-	Expr* e = (Expr*) SerialObj::Unserialize(info, SER_EXPR);
-
-	if ( ! e )
-		return 0;
-
-	if ( want != EXPR_ANY && e->tag != want )
-		{
-		info->s->Error("wrong expression type");
-		Unref(e);
-		return 0;
-		}
-
-	return e;
-	}
-
-bool Expr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_EXPR, BroObj);
-
-	if ( ! (SERIALIZE(char(tag)) && SERIALIZE(paren)) )
-		return false;
-
-	SERIALIZE_OPTIONAL(type);
-	return true;
-	}
-
-bool Expr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BroObj);
-
-	char c;
-	if ( ! (UNSERIALIZE(&c) && UNSERIALIZE(&paren)) )
-		return 0;
-
-	tag = BroExprTag(c);
-
-	BroType* t = 0;
-	UNSERIALIZE_OPTIONAL(t, BroType::Unserialize(info));
-	SetType(t);
-	return true;
-	}
-
-
 NameExpr::NameExpr(ID* arg_id, bool const_init) : Expr(EXPR_NAME)
 	{
 	id = arg_id;
@@ -282,7 +233,7 @@ Val* NameExpr::Eval(Frame* f) const
 		v = id->ID_Val();
 
 	else if ( f )
-		v = f->NthElement(id->Offset());
+		v = f->GetElement(id);
 
 	else
 		// No frame - evaluating for Simplify() purposes
@@ -311,12 +262,12 @@ Expr* NameExpr::MakeLvalue()
 	return new RefExpr(this);
 	}
 
-void NameExpr::Assign(Frame* f, Val* v, Opcode op)
+void NameExpr::Assign(Frame* f, Val* v)
 	{
 	if ( id->IsGlobal() )
-		id->SetVal(v, op);
+		id->SetVal(v);
 	else
-		f->SetElement(id->Offset(), v);
+		f->SetElement(id, v);
 	}
 
 int NameExpr::IsPure() const
@@ -348,55 +299,6 @@ void NameExpr::ExprDescribe(ODesc* d) const
 		else
 			d->AddCS(id->Name());
 		}
-	}
-
-IMPLEMENT_SERIAL(NameExpr, SER_NAME_EXPR);
-
-bool NameExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_NAME_EXPR, Expr);
-
-	// Write out just the name of the function if requested.
-	if ( info->globals_as_names && id->IsGlobal() )
-		return SERIALIZE('n') && SERIALIZE(id->Name()) &&
-		       SERIALIZE(in_const_init);
-	else
-		return SERIALIZE('f') && id->Serialize(info) &&
-		       SERIALIZE(in_const_init);
-	}
-
-bool NameExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-
-	char type;
-	if ( ! UNSERIALIZE(&type) )
-		return false;
-
-	if ( type == 'n' )
-		{
-		const char* name;
-		if ( ! UNSERIALIZE_STR(&name, 0) )
-			return false;
-
-		id = global_scope()->Lookup(name);
-		if ( id )
-			::Ref(id);
-		else
-			reporter->Warning("configuration changed: unserialized unknown global name from persistent state");
-
-		delete [] name;
-		}
-	else
-		id = ID::Unserialize(info);
-
-	if ( ! id )
-		return false;
-
-	if ( ! UNSERIALIZE(&in_const_init) )
-		return false;
-
-	return true;
 	}
 
 ConstExpr::ConstExpr(Val* arg_val) : Expr(EXPR_CONST)
@@ -436,22 +338,6 @@ TraversalCode ConstExpr::Traverse(TraversalCallback* cb) const
 	tc = cb->PostExpr(this);
 	HANDLE_TC_EXPR_POST(tc);
 	}
-
-IMPLEMENT_SERIAL(ConstExpr, SER_CONST_EXPR);
-
-bool ConstExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_CONST_EXPR, Expr);
-	return val->Serialize(info);
-	}
-
-bool ConstExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-	val = Val::Unserialize(info);
-	return val != 0;
-	}
-
 
 UnaryExpr::UnaryExpr(BroExprTag arg_tag, Expr* arg_op) : Expr(arg_tag)
 	{
@@ -549,21 +435,6 @@ void UnaryExpr::ExprDescribe(ODesc* d) const
 		Type()->Describe(d);
 		d->Add(")");
 		}
-	}
-
-IMPLEMENT_SERIAL(UnaryExpr, SER_UNARY_EXPR);
-
-bool UnaryExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_UNARY_EXPR, Expr);
-	return op->Serialize(info);
-	}
-
-bool UnaryExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-	op = Expr::Unserialize(info);
-	return op != 0;
 	}
 
 BinaryExpr::~BinaryExpr()
@@ -1039,26 +910,6 @@ void BinaryExpr::PromoteType(TypeTag t, bool is_vector)
 	SetType(is_vector ? new VectorType(base_type(t)) : base_type(t));
 	}
 
-IMPLEMENT_SERIAL(BinaryExpr, SER_BINARY_EXPR);
-
-bool BinaryExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_BINARY_EXPR, Expr);
-	return op1->Serialize(info) && op2->Serialize(info);
-	}
-
-bool BinaryExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-
-	op1 = Expr::Unserialize(info);
-	if ( ! op1 )
-		return false;
-
-	op2 = Expr::Unserialize(info);
-	return op2 != 0;
-	}
-
 CloneExpr::CloneExpr(Expr* arg_op) : UnaryExpr(EXPR_CLONE, arg_op)
 	{
 	if ( IsError() )
@@ -1087,20 +938,6 @@ Val* CloneExpr::Eval(Frame* f) const
 Val* CloneExpr::Fold(Val* v) const
 	{
 	return v->Clone();
-	}
-
-IMPLEMENT_SERIAL(CloneExpr, SER_CLONE_EXPR);
-
-bool CloneExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_CLONE_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool CloneExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
 	}
 
 IncrExpr::IncrExpr(BroExprTag arg_tag, Expr* arg_op)
@@ -1171,18 +1008,18 @@ Val* IncrExpr::Eval(Frame* f) const
 			if ( elt )
 				{
 				Val* new_elt = DoSingleEval(f, elt);
-				v_vec->Assign(i, new_elt, OP_INCR);
+				v_vec->Assign(i, new_elt);
 				}
 			else
-				v_vec->Assign(i, 0, OP_INCR);
+				v_vec->Assign(i, 0);
 			}
-		op->Assign(f, v_vec, OP_INCR);
+		op->Assign(f, v_vec);
 		}
 
 	else
 		{
 		Val* old_v = v;
-		op->Assign(f, v = DoSingleEval(f, old_v), OP_INCR);
+		op->Assign(f, v = DoSingleEval(f, old_v));
 		Unref(old_v);
 		}
 
@@ -1192,20 +1029,6 @@ Val* IncrExpr::Eval(Frame* f) const
 int IncrExpr::IsPure() const
 	{
 	return 0;
-	}
-
-IMPLEMENT_SERIAL(IncrExpr, SER_INCR_EXPR);
-
-bool IncrExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_INCR_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool IncrExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
 	}
 
 ComplementExpr::ComplementExpr(Expr* arg_op) : UnaryExpr(EXPR_COMPLEMENT, arg_op)
@@ -1227,20 +1050,6 @@ Val* ComplementExpr::Fold(Val* v) const
 	return val_mgr->GetCount(~ v->InternalUnsigned());
 	}
 
-IMPLEMENT_SERIAL(ComplementExpr, SER_COMPLEMENT_EXPR);
-
-bool ComplementExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_COMPLEMENT_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool ComplementExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 NotExpr::NotExpr(Expr* arg_op) : UnaryExpr(EXPR_NOT, arg_op)
 	{
 	if ( IsError() )
@@ -1258,20 +1067,6 @@ NotExpr::NotExpr(Expr* arg_op) : UnaryExpr(EXPR_NOT, arg_op)
 Val* NotExpr::Fold(Val* v) const
 	{
 	return val_mgr->GetBool(! v->InternalInt());
-	}
-
-IMPLEMENT_SERIAL(NotExpr, SER_NOT_EXPR);
-
-bool NotExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_NOT_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool NotExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
 	}
 
 PosExpr::PosExpr(Expr* arg_op) : UnaryExpr(EXPR_POSITIVE, arg_op)
@@ -1310,20 +1105,6 @@ Val* PosExpr::Fold(Val* v) const
 		return val_mgr->GetInt(v->CoerceToInt());
 	}
 
-IMPLEMENT_SERIAL(PosExpr, SER_POS_EXPR);
-
-bool PosExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_POS_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool PosExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 NegExpr::NegExpr(Expr* arg_op) : UnaryExpr(EXPR_NEGATE, arg_op)
 	{
 	if ( IsError() )
@@ -1360,21 +1141,6 @@ Val* NegExpr::Fold(Val* v) const
 		return val_mgr->GetInt(- v->CoerceToInt());
 	}
 
-
-IMPLEMENT_SERIAL(NegExpr, SER_NEG_EXPR);
-
-bool NegExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_NEG_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool NegExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 SizeExpr::SizeExpr(Expr* arg_op) : UnaryExpr(EXPR_SIZE, arg_op)
 	{
 	if ( IsError() )
@@ -1401,21 +1167,6 @@ Val* SizeExpr::Fold(Val* v) const
 	{
 	return v->SizeVal();
 	}
-
-IMPLEMENT_SERIAL(SizeExpr, SER_SIZE_EXPR);
-
-bool SizeExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_SIZE_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool SizeExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 
 AddExpr::AddExpr(Expr* arg_op1, Expr* arg_op2)
 : BinaryExpr(EXPR_ADD, arg_op1, arg_op2)
@@ -1462,20 +1213,6 @@ void AddExpr::Canonicize()
 	      op2->Type()->Tag() == TYPE_TIME) ||
 	     (op2->IsConst() && ! is_vector(op2->ExprVal()) && ! op1->IsConst()))
 		SwapOps();
-	}
-
-IMPLEMENT_SERIAL(AddExpr, SER_ADD_EXPR);
-
-bool AddExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_ADD_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool AddExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 AddToExpr::AddToExpr(Expr* arg_op1, Expr* arg_op2)
@@ -1559,20 +1296,6 @@ Val* AddToExpr::Eval(Frame* f) const
 		return 0;
 	}
 
-IMPLEMENT_SERIAL(AddToExpr, SER_ADD_TO_EXPR);
-
-bool AddToExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_ADD_TO_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool AddToExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
-	}
-
 SubExpr::SubExpr(Expr* arg_op1, Expr* arg_op2)
 : BinaryExpr(EXPR_SUB, arg_op1, arg_op2)
 	{
@@ -1624,20 +1347,6 @@ SubExpr::SubExpr(Expr* arg_op1, Expr* arg_op2)
 		}
 	}
 
-IMPLEMENT_SERIAL(SubExpr, SER_SUB_EXPR);
-
-bool SubExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_SUB_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool SubExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
-	}
-
 RemoveFromExpr::RemoveFromExpr(Expr* arg_op1, Expr* arg_op2)
 : BinaryExpr(EXPR_REMOVE_FROM, arg_op1->MakeLvalue(), arg_op2)
 	{
@@ -1682,20 +1391,6 @@ Val* RemoveFromExpr::Eval(Frame* f) const
 		return 0;
 	}
 
-IMPLEMENT_SERIAL(RemoveFromExpr, SER_REMOVE_FROM_EXPR);
-
-bool RemoveFromExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_REMOVE_FROM_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool RemoveFromExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
-	}
-
 TimesExpr::TimesExpr(Expr* arg_op1, Expr* arg_op2)
 : BinaryExpr(EXPR_TIMES, arg_op1, arg_op2)
 	{
@@ -1730,20 +1425,6 @@ void TimesExpr::Canonicize()
 	if ( expr_greater(op2, op1) || op2->Type()->Tag() == TYPE_INTERVAL ||
 	     (op2->IsConst() && ! is_vector(op2->ExprVal()) && ! op1->IsConst()) )
 		SwapOps();
-	}
-
-IMPLEMENT_SERIAL(TimesExpr, SER_TIMES_EXPR);
-
-bool TimesExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_TIMES_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool TimesExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 DivideExpr::DivideExpr(Expr* arg_op1, Expr* arg_op2)
@@ -1788,11 +1469,11 @@ DivideExpr::DivideExpr(Expr* arg_op1, Expr* arg_op2)
 
 Val* DivideExpr::AddrFold(Val* v1, Val* v2) const
 	{
-	uint32 mask;
+	uint32_t mask;
 	if ( v2->Type()->Tag() == TYPE_COUNT )
-		mask = static_cast<uint32>(v2->InternalUnsigned());
+		mask = static_cast<uint32_t>(v2->InternalUnsigned());
 	else
-		mask = static_cast<uint32>(v2->InternalInt());
+		mask = static_cast<uint32_t>(v2->InternalInt());
 
 	auto& a = v1->AsAddr();
 
@@ -1808,20 +1489,6 @@ Val* DivideExpr::AddrFold(Val* v1, Val* v2) const
 		}
 
 	return new SubNetVal(a, mask);
-	}
-
-IMPLEMENT_SERIAL(DivideExpr, SER_DIVIDE_EXPR);
-
-bool DivideExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_DIVIDE_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool DivideExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 ModExpr::ModExpr(Expr* arg_op1, Expr* arg_op2)
@@ -1842,20 +1509,6 @@ ModExpr::ModExpr(Expr* arg_op1, Expr* arg_op2)
 		PromoteType(max_type(bt1, bt2), is_vector(op1) || is_vector(op2));
 	else
 		ExprError("requires integral operands");
-	}
-
-IMPLEMENT_SERIAL(ModExpr, SER_MOD_EXPR);
-
-bool ModExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_MOD_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool ModExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 BoolExpr::BoolExpr(BroExprTag arg_tag, Expr* arg_op1, Expr* arg_op2)
@@ -2014,20 +1667,6 @@ Val* BoolExpr::Eval(Frame* f) const
 	return result;
 	}
 
-IMPLEMENT_SERIAL(BoolExpr, SER_BOOL_EXPR);
-
-bool BoolExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_BOOL_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool BoolExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
-	}
-
 BitExpr::BitExpr(BroExprTag arg_tag, Expr* arg_op1, Expr* arg_op2)
 : BinaryExpr(arg_tag, arg_op1, arg_op2)
 	{
@@ -2076,20 +1715,6 @@ BitExpr::BitExpr(BroExprTag arg_tag, Expr* arg_op1, Expr* arg_op2)
 
 	else
 		ExprError("requires \"count\" or compatible \"set\" operands");
-	}
-
-IMPLEMENT_SERIAL(BitExpr, SER_BIT_EXPR);
-
-bool BitExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_BIT_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool BitExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 EqExpr::EqExpr(BroExprTag arg_tag, Expr* arg_op1, Expr* arg_op2)
@@ -2193,20 +1818,6 @@ Val* EqExpr::Fold(Val* v1, Val* v2) const
 		return BinaryExpr::Fold(v1, v2);
 	}
 
-IMPLEMENT_SERIAL(EqExpr, SER_EQ_EXPR);
-
-bool EqExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_EQ_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool EqExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
-	}
-
 RelExpr::RelExpr(BroExprTag arg_tag, Expr* arg_op1, Expr* arg_op2)
 : BinaryExpr(arg_tag, arg_op1, arg_op2)
 	{
@@ -2262,20 +1873,6 @@ void RelExpr::Canonicize()
 		SwapOps();
 		tag = EXPR_LE;
 		}
-	}
-
-IMPLEMENT_SERIAL(RelExpr, SER_REL_EXPR);
-
-bool RelExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_REL_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool RelExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 CondExpr::CondExpr(Expr* arg_op1, Expr* arg_op2, Expr* arg_op3)
@@ -2429,32 +2026,6 @@ void CondExpr::ExprDescribe(ODesc* d) const
 	op3->Describe(d);
 	}
 
-IMPLEMENT_SERIAL(CondExpr, SER_COND_EXPR);
-
-bool CondExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_COND_EXPR, Expr);
-	return op1->Serialize(info) && op2->Serialize(info)
-			&& op3->Serialize(info);
-	}
-
-bool CondExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-
-	op1 = Expr::Unserialize(info);
-	if ( ! op1 )
-		return false;
-
-	op2 = Expr::Unserialize(info);
-	if ( ! op2 )
-		return false;
-
-	op3 = Expr::Unserialize(info);
-
-	return op3 != 0;
-	}
-
 RefExpr::RefExpr(Expr* arg_op) : UnaryExpr(EXPR_REF, arg_op)
 	{
 	if ( IsError() )
@@ -2471,23 +2042,9 @@ Expr* RefExpr::MakeLvalue()
 	return this;
 	}
 
-void RefExpr::Assign(Frame* f, Val* v, Opcode opcode)
+void RefExpr::Assign(Frame* f, Val* v)
 	{
-	op->Assign(f, v, opcode);
-	}
-
-IMPLEMENT_SERIAL(RefExpr, SER_REF_EXPR);
-
-bool RefExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_REF_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool RefExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
+	op->Assign(f, v);
 	}
 
 AssignExpr::AssignExpr(Expr* arg_op1, Expr* arg_op2, int arg_is_init,
@@ -2554,18 +2111,28 @@ bool AssignExpr::TypeCheck(attr_list* attrs)
 	if ( bt1 == TYPE_TABLE && op2->Tag() == EXPR_LIST )
 		{
 		attr_list* attr_copy = 0;
-
 		if ( attrs )
 			{
 			attr_copy = new attr_list(attrs->length());
-			loop_over_list(*attrs, i)
-				attr_copy->append((*attrs)[i]);
+			std::copy(attrs->begin(), attrs->end(), std::back_inserter(*attr_copy));
 			}
+
+		bool empty_list_assignment = (op2->AsListExpr()->Exprs().length() == 0);
 
 		if ( op1->Type()->IsSet() )
 			op2 = new SetConstructorExpr(op2->AsListExpr(), attr_copy);
 		else
 			op2 = new TableConstructorExpr(op2->AsListExpr(), attr_copy);
+
+		if ( ! empty_list_assignment && ! same_type(op1->Type(), op2->Type()) )
+			{
+			if ( op1->Type()->IsSet() )
+				ExprError("set type mismatch in assignment");
+			else
+				ExprError("table type mismatch in assignment");
+
+			return false;
+			}
 
 		return true;
 		}
@@ -2580,7 +2147,7 @@ bool AssignExpr::TypeCheck(attr_list* attrs)
 
 		if ( op2->Tag() == EXPR_LIST )
 			{
-			op2 = new VectorConstructorExpr(op2->AsListExpr());
+			op2 = new VectorConstructorExpr(op2->AsListExpr(), op1->Type());
 			return true;
 			}
 		}
@@ -2627,8 +2194,7 @@ bool AssignExpr::TypeCheck(attr_list* attrs)
 					{
 					attr_list* a = sce->Attrs()->Attrs();
 					attrs = new attr_list(a->length());
-					loop_over_list(*a, i)
-						attrs->append((*a)[i]);
+					std::copy(a->begin(), a->end(), std::back_inserter(*attrs));
 					}
 
 				int errors_before = reporter->Errors();
@@ -2878,32 +2444,40 @@ int AssignExpr::IsPure() const
 	return 0;
 	}
 
-IMPLEMENT_SERIAL(AssignExpr, SER_ASSIGN_EXPR);
-
-bool AssignExpr::DoSerialize(SerialInfo* info) const
+IndexSliceAssignExpr::IndexSliceAssignExpr(Expr* op1, Expr* op2, int is_init)
+	: AssignExpr(op1, op2, is_init)
 	{
-	DO_SERIALIZE(SER_ASSIGN_EXPR, BinaryExpr);
-	SERIALIZE_OPTIONAL(val);
-	return SERIALIZE(is_init);
 	}
 
-bool AssignExpr::DoUnserialize(UnserialInfo* info)
+Val* IndexSliceAssignExpr::Eval(Frame* f) const
 	{
-	DO_UNSERIALIZE(BinaryExpr);
-	UNSERIALIZE_OPTIONAL(val, Val::Unserialize(info));
-	return UNSERIALIZE(&is_init);
+	if ( is_init )
+		{
+		RuntimeError("illegal assignment in initialization");
+		return 0;
+		}
+
+	Val* v = op2->Eval(f);
+
+	if ( v )
+		{
+		op1->Assign(f, v);
+		Unref(v);
+		}
+
+	return 0;
 	}
 
-IndexExpr::IndexExpr(Expr* arg_op1, ListExpr* arg_op2, bool is_slice)
-: BinaryExpr(EXPR_INDEX, arg_op1, arg_op2)
+IndexExpr::IndexExpr(Expr* arg_op1, ListExpr* arg_op2, bool arg_is_slice)
+: BinaryExpr(EXPR_INDEX, arg_op1, arg_op2), is_slice(arg_is_slice)
 	{
 	if ( IsError() )
 		return;
 
 	if ( is_slice )
 		{
-		if ( ! IsString(op1->Type()->Tag()) )
-			ExprError("slice notation indexing only supported for strings currently");
+		if ( ! IsString(op1->Type()->Tag()) && ! IsVector(op1->Type()->Tag()) )
+			ExprError("slice notation indexing only supported for strings and vectors currently");
 		}
 
 	else if ( IsString(op1->Type()->Tag()) )
@@ -2917,12 +2491,16 @@ IndexExpr::IndexExpr(Expr* arg_op1, ListExpr* arg_op2, bool is_slice)
 
 	int match_type = op1->Type()->MatchesIndex(arg_op2);
 	if ( match_type == DOES_NOT_MATCH_INDEX )
-		SetError("not an index type");
+		{
+		std::string error_msg =
+		    fmt("expression with type '%s' is not a type that can be indexed",
+		        type_name(op1->Type()->Tag()));
+		SetError(error_msg.data());
+		}
 
 	else if ( ! op1->Type()->YieldType() )
 		{
-		if ( IsString(op1->Type()->Tag()) &&
-		     match_type == MATCHES_INDEX_SCALAR )
+		if ( IsString(op1->Type()->Tag()) && match_type == MATCHES_INDEX_SCALAR )
 			SetType(base_type(TYPE_STRING));
 		else
 		// It's a set - so indexing it yields void.  We don't
@@ -3088,11 +2666,36 @@ Val* IndexExpr::Fold(Val* v1, Val* v2) const
 
 	switch ( v1->Type()->Tag() ) {
 	case TYPE_VECTOR:
-		v = v1->AsVectorVal()->Lookup(v2);
+		{
+		VectorVal* vect = v1->AsVectorVal();
+		const ListVal* lv = v2->AsListVal();
+
+		if ( lv->Length() == 1 )
+			v = vect->Lookup(v2);
+		else
+			{
+			int len = vect->Size();
+			VectorVal* result = new VectorVal(vect->Type()->AsVectorType());
+
+			bro_int_t first = get_slice_index(lv->Index(0)->CoerceToInt(), len);
+			bro_int_t last = get_slice_index(lv->Index(1)->CoerceToInt(), len);
+			int sub_length = last - first;
+
+			if ( sub_length >= 0 )
+				{
+				result->Resize(sub_length);
+
+				for ( int idx = first; idx < last; idx++ )
+					result->Assign(idx - first, vect->Lookup(idx)->Ref());
+				}
+
+			return result;
+			}
+		}
 		break;
 
 	case TYPE_TABLE:
-		v = v1->AsTableVal()->Lookup(v2);
+		v = v1->AsTableVal()->Lookup(v2); // Then, we jump into the TableVal here.
 		break;
 
 	case TYPE_STRING:
@@ -3139,7 +2742,7 @@ Val* IndexExpr::Fold(Val* v1, Val* v2) const
 	return 0;
 	}
 
-void IndexExpr::Assign(Frame* f, Val* v, Opcode op)
+void IndexExpr::Assign(Frame* f, Val* v)
 	{
 	if ( IsError() )
 		return;
@@ -3159,7 +2762,27 @@ void IndexExpr::Assign(Frame* f, Val* v, Opcode op)
 
 	switch ( v1->Type()->Tag() ) {
 	case TYPE_VECTOR:
-		if ( ! v1->AsVectorVal()->Assign(v2, v, op) )
+		{
+		const ListVal* lv = v2->AsListVal();
+		VectorVal* v1_vect = v1->AsVectorVal();
+
+		if ( lv->Length() > 1 )
+			{
+			auto len = v1_vect->Size();
+			bro_int_t first = get_slice_index(lv->Index(0)->CoerceToInt(), len);
+			bro_int_t last = get_slice_index(lv->Index(1)->CoerceToInt(), len);
+
+			// Remove the elements from the vector within the slice
+			for ( auto idx = first; idx < last; idx++ )
+				v1_vect->Remove(first);
+
+			// Insert the new elements starting at the first position
+			VectorVal* v_vect = v->AsVectorVal();
+
+			for ( auto idx = 0u; idx < v_vect->Size(); idx++, first++ )
+				v1_vect->Insert(first, v_vect->Lookup(idx)->Ref());
+			}
+		else if ( ! v1_vect->Assign(v2, v) )
 			{
 			if ( v )
 				{
@@ -3176,9 +2799,10 @@ void IndexExpr::Assign(Frame* f, Val* v, Opcode op)
 				RuntimeErrorWithCallStack("assignment failed with null value");
 			}
 		break;
+		}
 
 	case TYPE_TABLE:
-		if ( ! v1->AsTableVal()->Assign(v2, v, op) )
+		if ( ! v1->AsTableVal()->Assign(v2, v) )
 			{
 			if ( v )
 				{
@@ -3235,21 +2859,6 @@ TraversalCode IndexExpr::Traverse(TraversalCallback* cb) const
 	HANDLE_TC_EXPR_POST(tc);
 	}
 
-
-IMPLEMENT_SERIAL(IndexExpr, SER_INDEX_EXPR);
-
-bool IndexExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_INDEX_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool IndexExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
-	}
-
 FieldExpr::FieldExpr(Expr* arg_op, const char* arg_field_name)
 : UnaryExpr(EXPR_FIELD, arg_op)
 	{
@@ -3274,9 +2883,8 @@ FieldExpr::FieldExpr(Expr* arg_op, const char* arg_field_name)
 			SetType(rt->FieldType(field)->Ref());
 			td = rt->FieldDecl(field);
 
-			if ( td->FindAttr(ATTR_DEPRECATED) )
-				reporter->Warning("deprecated (%s$%s)", rt->GetName().c_str(),
-				                  field_name);
+			if ( rt->IsFieldDeprecated(field) )
+				reporter->Warning("%s", rt->GetFieldDeprecationWarning(field, false).c_str());
 			}
 		}
 	}
@@ -3296,7 +2904,7 @@ int FieldExpr::CanDel() const
 	return td->FindAttr(ATTR_DEFAULT) || td->FindAttr(ATTR_OPTIONAL);
 	}
 
-void FieldExpr::Assign(Frame* f, Val* v, Opcode opcode)
+void FieldExpr::Assign(Frame* f, Val* v)
 	{
 	if ( IsError() )
 		return;
@@ -3305,14 +2913,14 @@ void FieldExpr::Assign(Frame* f, Val* v, Opcode opcode)
 	if ( op_v )
 		{
 		RecordVal* r = op_v->AsRecordVal();
-		r->Assign(field, v, opcode);
+		r->Assign(field, v);
 		Unref(r);
 		}
 	}
 
 void FieldExpr::Delete(Frame* f)
 	{
-	Assign(f, 0, OP_ASSIGN_IDX);
+	Assign(f, 0);
 	}
 
 Val* FieldExpr::Fold(Val* v) const
@@ -3347,29 +2955,6 @@ void FieldExpr::ExprDescribe(ODesc* d) const
 		d->Add(field);
 	}
 
-IMPLEMENT_SERIAL(FieldExpr, SER_FIELD_EXPR);
-
-bool FieldExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_FIELD_EXPR, UnaryExpr);
-
-	if ( ! (SERIALIZE(field_name) && SERIALIZE(field) ) )
-		return false;
-
-	return td->Serialize(info);
-	}
-
-bool FieldExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-
-	if ( ! (UNSERIALIZE_STR(&field_name, 0) && UNSERIALIZE(&field) ) )
-		return false;
-
-	td = TypeDecl::Unserialize(info);
-	return td != 0;
-	}
-
 HasFieldExpr::HasFieldExpr(Expr* arg_op, const char* arg_field_name)
 : UnaryExpr(EXPR_HAS_FIELD, arg_op)
 	{
@@ -3388,9 +2973,8 @@ HasFieldExpr::HasFieldExpr(Expr* arg_op, const char* arg_field_name)
 
 		if ( field < 0 )
 			ExprError("no such field in record");
-		else if ( rt->FieldDecl(field)->FindAttr(ATTR_DEPRECATED) )
-			reporter->Warning("deprecated (%s?$%s)", rt->GetName().c_str(),
-			                  field_name);
+		else if ( rt->IsFieldDeprecated(field) )
+			reporter->Warning("%s", rt->GetFieldDeprecationWarning(field, true).c_str());
 
 		SetType(base_type(TYPE_BOOL));
 		}
@@ -3432,24 +3016,6 @@ void HasFieldExpr::ExprDescribe(ODesc* d) const
 		d->Add(field);
 	}
 
-IMPLEMENT_SERIAL(HasFieldExpr, SER_HAS_FIELD_EXPR);
-
-bool HasFieldExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_HAS_FIELD_EXPR, UnaryExpr);
-
-	// Serialize former "bool is_attr" member first for backwards compatibility.
-	return SERIALIZE(false) && SERIALIZE(field_name) && SERIALIZE(field);
-	}
-
-bool HasFieldExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	// Unserialize former "bool is_attr" member for backwards compatibility.
-	bool not_used;
-	return UNSERIALIZE(&not_used) && UNSERIALIZE_STR(&field_name, 0) && UNSERIALIZE(&field);
-	}
-
 RecordConstructorExpr::RecordConstructorExpr(ListExpr* constructor_list)
 : UnaryExpr(EXPR_RECORD_CONSTRUCTOR, constructor_list)
 	{
@@ -3462,10 +3028,8 @@ RecordConstructorExpr::RecordConstructorExpr(ListExpr* constructor_list)
 	const expr_list& exprs = constructor_list->Exprs();
 	type_decl_list* record_types = new type_decl_list(exprs.length());
 
-	loop_over_list(exprs, i)
+	for ( const auto& e : exprs )
 		{
-		Expr* e = exprs[i];
-
 		if ( e->Tag() != EXPR_FIELD_ASSIGN )
 			{
 			Error("bad type in record constructor", e);
@@ -3476,7 +3040,7 @@ RecordConstructorExpr::RecordConstructorExpr(ListExpr* constructor_list)
 		FieldAssignExpr* field = (FieldAssignExpr*) e;
 		BroType* field_type = field->Type()->Ref();
 		char* field_name = copy_string(field->FieldName());
-		record_types->append(new TypeDecl(field_type, field_name));
+		record_types->push_back(new TypeDecl(field_type, field_name));
 		}
 
 	SetType(new RecordType(record_types));
@@ -3529,20 +3093,6 @@ void RecordConstructorExpr::ExprDescribe(ODesc* d) const
 	d->Add("]");
 	}
 
-IMPLEMENT_SERIAL(RecordConstructorExpr, SER_RECORD_CONSTRUCTOR_EXPR);
-
-bool RecordConstructorExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_RECORD_CONSTRUCTOR_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool RecordConstructorExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 TableConstructorExpr::TableConstructorExpr(ListExpr* constructor_list,
 					   attr_list* arg_attrs, BroType* arg_type)
 : UnaryExpr(EXPR_TABLE_CONSTRUCTOR, constructor_list)
@@ -3580,18 +3130,18 @@ TableConstructorExpr::TableConstructorExpr(ListExpr* constructor_list,
 			}
 		}
 
-	attrs = arg_attrs ? new Attributes(arg_attrs, type, false) : 0;
+	attrs = arg_attrs ? new Attributes(arg_attrs, type, false, false) : 0;
 
 	type_list* indices = type->AsTableType()->Indices()->Types();
 	const expr_list& cle = constructor_list->Exprs();
 
 	// check and promote all index expressions in ctor list
-	loop_over_list(cle, i)
+	for ( const auto& expr : cle )
 		{
-		if ( cle[i]->Tag() != EXPR_ASSIGN )
+		if ( expr->Tag() != EXPR_ASSIGN )
 			continue;
 
-		Expr* idx_expr = cle[i]->AsAssignExpr()->Op1();
+		Expr* idx_expr = expr->AsAssignExpr()->Op1();
 
 		if ( idx_expr->Tag() != EXPR_LIST )
 			continue;
@@ -3625,8 +3175,10 @@ Val* TableConstructorExpr::Eval(Frame* f) const
 	Val* aggr = new TableVal(Type()->AsTableType(), attrs);
 	const expr_list& exprs = op->AsListExpr()->Exprs();
 
-	loop_over_list(exprs, i)
-		exprs[i]->EvalIntoAggregate(type, aggr, f);
+	for ( const auto& expr : exprs )
+		expr->EvalIntoAggregate(type, aggr, f);
+
+	aggr->AsTableVal()->InitDefaultFunc(f);
 
 	return aggr;
 	}
@@ -3640,8 +3192,8 @@ Val* TableConstructorExpr::InitVal(const BroType* t, Val* aggr) const
 	TableVal* tval = aggr ? aggr->AsTableVal() : new TableVal(tt, attrs);
 	const expr_list& exprs = op->AsListExpr()->Exprs();
 
-	loop_over_list(exprs, i)
-		exprs[i]->EvalIntoAggregate(t, tval, 0);
+	for ( const auto& expr : exprs )
+		expr->EvalIntoAggregate(t, tval, 0);
 
 	return tval;
 	}
@@ -3651,22 +3203,6 @@ void TableConstructorExpr::ExprDescribe(ODesc* d) const
 	d->Add("table(");
 	op->Describe(d);
 	d->Add(")");
-	}
-
-IMPLEMENT_SERIAL(TableConstructorExpr, SER_TABLE_CONSTRUCTOR_EXPR);
-
-bool TableConstructorExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_TABLE_CONSTRUCTOR_EXPR, UnaryExpr);
-	SERIALIZE_OPTIONAL(attrs);
-	return true;
-	}
-
-bool TableConstructorExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	UNSERIALIZE_OPTIONAL(attrs, Attributes::Unserialize(info));
-	return true;
 	}
 
 SetConstructorExpr::SetConstructorExpr(ListExpr* constructor_list,
@@ -3703,7 +3239,7 @@ SetConstructorExpr::SetConstructorExpr(ListExpr* constructor_list,
 	else if ( type->Tag() != TYPE_TABLE || ! type->AsTableType()->IsSet() )
 		SetError("values in set(...) constructor do not specify a set");
 
-	attrs = arg_attrs ? new Attributes(arg_attrs, type, false) : 0;
+	attrs = arg_attrs ? new Attributes(arg_attrs, type, false, false) : 0;
 
 	type_list* indices = type->AsTableType()->Indices()->Types();
 	expr_list& cle = constructor_list->Exprs();
@@ -3745,9 +3281,9 @@ Val* SetConstructorExpr::Eval(Frame* f) const
 	TableVal* aggr = new TableVal(type->AsTableType(), attrs);
 	const expr_list& exprs = op->AsListExpr()->Exprs();
 
-	loop_over_list(exprs, i)
+	for ( const auto& expr : exprs )
 		{
-		Val* element = exprs[i]->Eval(f);
+		Val* element = expr->Eval(f);
 		aggr->Assign(element, 0);
 		Unref(element);
 		}
@@ -3765,9 +3301,8 @@ Val* SetConstructorExpr::InitVal(const BroType* t, Val* aggr) const
 	TableVal* tval = aggr ? aggr->AsTableVal() : new TableVal(tt, attrs);
 	const expr_list& exprs = op->AsListExpr()->Exprs();
 
-	loop_over_list(exprs, i)
+	for ( const auto& e : exprs )
 		{
-		Expr* e = exprs[i];
 		Val* element = check_and_promote(e->Eval(0), index_type, 1);
 
 		if ( ! element || ! tval->Assign(element, 0) )
@@ -3787,22 +3322,6 @@ void SetConstructorExpr::ExprDescribe(ODesc* d) const
 	d->Add("set(");
 	op->Describe(d);
 	d->Add(")");
-	}
-
-IMPLEMENT_SERIAL(SetConstructorExpr, SER_SET_CONSTRUCTOR_EXPR);
-
-bool SetConstructorExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_SET_CONSTRUCTOR_EXPR, UnaryExpr);
-	SERIALIZE_OPTIONAL(attrs);
-	return true;
-	}
-
-bool SetConstructorExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	UNSERIALIZE_OPTIONAL(attrs, Attributes::Unserialize(info));
-	return true;
 	}
 
 VectorConstructorExpr::VectorConstructorExpr(ListExpr* constructor_list,
@@ -3908,20 +3427,6 @@ void VectorConstructorExpr::ExprDescribe(ODesc* d) const
 	d->Add(")");
 	}
 
-IMPLEMENT_SERIAL(VectorConstructorExpr, SER_VECTOR_CONSTRUCTOR_EXPR);
-
-bool VectorConstructorExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_VECTOR_CONSTRUCTOR_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool VectorConstructorExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 FieldAssignExpr::FieldAssignExpr(const char* arg_field_name, Expr* value)
 : UnaryExpr(EXPR_FIELD_ASSIGN, value), field_name(arg_field_name)
 	{
@@ -3968,20 +3473,6 @@ void FieldAssignExpr::ExprDescribe(ODesc* d) const
 	d->Add(FieldName());
 	d->Add("=");
 	op->Describe(d);
-	}
-
-IMPLEMENT_SERIAL(FieldAssignExpr, SER_FIELD_ASSIGN_EXPR);
-
-bool FieldAssignExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_FIELD_ASSIGN_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool FieldAssignExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
 	}
 
 ArithCoerceExpr::ArithCoerceExpr(Expr* arg_op, TypeTag t)
@@ -4061,21 +3552,6 @@ Val* ArithCoerceExpr::Fold(Val* v) const
 	return result;
 	}
 
-IMPLEMENT_SERIAL(ArithCoerceExpr, SER_ARITH_COERCE_EXPR);
-
-bool ArithCoerceExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_ARITH_COERCE_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool ArithCoerceExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
-
 RecordCoerceExpr::RecordCoerceExpr(Expr* op, RecordType* r)
 : UnaryExpr(EXPR_RECORD_COERCE, op)
 	{
@@ -4120,15 +3596,41 @@ RecordCoerceExpr::RecordCoerceExpr(Expr* op, RecordType* r)
 
 			if ( ! same_type(sup_t_i, sub_t_i) )
 				{
-				if ( sup_t_i->Tag() != TYPE_RECORD ||
-				     sub_t_i->Tag() != TYPE_RECORD ||
-				     ! record_promotion_compatible(sup_t_i->AsRecordType(),
-				                                   sub_t_i->AsRecordType()) )
+				auto is_arithmetic_promotable = [](BroType* sup, BroType* sub) -> bool
 					{
-					char buf[512];
-					safe_snprintf(buf, sizeof(buf),
+					auto sup_tag = sup->Tag();
+					auto sub_tag = sub->Tag();
+
+					if ( ! BothArithmetic(sup_tag, sub_tag) )
+						return false;
+
+					if ( sub_tag == TYPE_DOUBLE && IsIntegral(sup_tag) )
+						return false;
+
+					if ( sub_tag == TYPE_INT && sup_tag == TYPE_COUNT )
+						return false;
+
+					return true;
+					};
+
+				auto is_record_promotable = [](BroType* sup, BroType* sub) -> bool
+					{
+					if ( sup->Tag() != TYPE_RECORD )
+						return false;
+
+					if ( sub->Tag() != TYPE_RECORD )
+						return false;
+
+					return record_promotion_compatible(sup->AsRecordType(),
+					                                   sub->AsRecordType());
+					};
+
+				if ( ! is_arithmetic_promotable(sup_t_i, sub_t_i) &&
+				     ! is_record_promotable(sup_t_i, sub_t_i) )
+					{
+					string error_msg = fmt(
 						"type clash for field \"%s\"", sub_r->FieldName(i));
-					Error(buf, sub_t_i);
+					Error(error_msg.c_str(), sub_t_i);
 					SetError();
 					break;
 					}
@@ -4146,22 +3648,15 @@ RecordCoerceExpr::RecordCoerceExpr(Expr* op, RecordType* r)
 				{
 				if ( ! t_r->FieldDecl(i)->FindAttr(ATTR_OPTIONAL) )
 					{
-					char buf[512];
-					safe_snprintf(buf, sizeof(buf),
-					              "non-optional field \"%s\" missing",
-					              t_r->FieldName(i));
-					Error(buf);
+					string error_msg = fmt(
+						"non-optional field \"%s\" missing", t_r->FieldName(i));
+					Error(error_msg.c_str());
 					SetError();
 					break;
 					}
 				}
-			else
-				{
-				if ( t_r->FieldDecl(i)->FindAttr(ATTR_DEPRECATED) )
-					reporter->Warning("deprecated (%s$%s)",
-					                  t_r->GetName().c_str(),
-					                  t_r->FieldName(i));
-				}
+			else if ( t_r->IsFieldDeprecated(i) )
+				reporter->Warning("%s", t_r->GetFieldDeprecationWarning(i, false).c_str());
 			}
 		}
 	}
@@ -4238,6 +3733,20 @@ Val* RecordCoerceExpr::Fold(Val* v) const
 					rhs = new_val;
 					}
 				}
+			else if ( BothArithmetic(rhs_type->Tag(), field_type->Tag()) &&
+			          ! same_type(rhs_type, field_type) )
+				{
+				if ( Val* new_val = check_and_promote(rhs, field_type, false, op->GetLocationInfo()) )
+					{
+					// Don't call unref here on rhs because check_and_promote already called it.
+					rhs = new_val;
+					}
+				else
+					{
+					Unref(val);
+					RuntimeError("Failed type conversion");
+					}
+				}
 
 			val->Assign(i, rhs);
 			}
@@ -4276,39 +3785,6 @@ Val* RecordCoerceExpr::Fold(Val* v) const
 	return val;
 	}
 
-IMPLEMENT_SERIAL(RecordCoerceExpr, SER_RECORD_COERCE_EXPR);
-
-bool RecordCoerceExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_RECORD_COERCE_EXPR, UnaryExpr);
-
-	if ( ! SERIALIZE(map_size) )
-		return false;
-
-	for ( int i = 0; i < map_size; ++i )
-		if ( ! SERIALIZE(map[i]) )
-			return false;
-
-	return true;
-	}
-
-bool RecordCoerceExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-
-	if ( ! UNSERIALIZE(&map_size) )
-		return false;
-
-	map = new int[map_size];
-
-	for ( int i = 0; i < map_size; ++i )
-		if ( ! UNSERIALIZE(&map[i]) )
-			return false;
-
-	return true;
-	}
-
-
 TableCoerceExpr::TableCoerceExpr(Expr* op, TableType* r)
 : UnaryExpr(EXPR_TABLE_COERCE, op)
 	{
@@ -4339,20 +3815,6 @@ Val* TableCoerceExpr::Fold(Val* v) const
 	return new TableVal(Type()->AsTableType(), tv->Attrs());
 	}
 
-IMPLEMENT_SERIAL(TableCoerceExpr, SER_TABLE_COERCE_EXPR);
-
-bool TableCoerceExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_TABLE_COERCE_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool TableCoerceExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 VectorCoerceExpr::VectorCoerceExpr(Expr* op, VectorType* v)
 : UnaryExpr(EXPR_VECTOR_COERCE, op)
 	{
@@ -4381,20 +3843,6 @@ Val* VectorCoerceExpr::Fold(Val* v) const
 		RuntimeErrorWithCallStack("coercion of non-empty vector");
 
 	return new VectorVal(Type()->Ref()->AsVectorType());
-	}
-
-IMPLEMENT_SERIAL(VectorCoerceExpr, SER_VECTOR_COERCE_EXPR);
-
-bool VectorCoerceExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_VECTOR_COERCE_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool VectorCoerceExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
 	}
 
 FlattenExpr::FlattenExpr(Expr* arg_op)
@@ -4443,20 +3891,6 @@ Val* FlattenExpr::Fold(Val* v) const
 		}
 
 	return l;
-	}
-
-IMPLEMENT_SERIAL(FlattenExpr, SER_FLATTEN_EXPR);
-
-bool FlattenExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_FLATTEN_EXPR, UnaryExpr);
-	return SERIALIZE(num_fields);
-	}
-
-bool FlattenExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return UNSERIALIZE(&num_fields);
 	}
 
 ScheduleTimer::ScheduleTimer(EventHandlerPtr arg_event, val_list* arg_args,
@@ -4568,26 +4002,6 @@ void ScheduleExpr::ExprDescribe(ODesc* d) const
 		}
 	else
 		event->Describe(d);
-	}
-
-IMPLEMENT_SERIAL(ScheduleExpr, SER_SCHEDULE_EXPR);
-
-bool ScheduleExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_SCHEDULE_EXPR, Expr);
-	return when->Serialize(info) && event->Serialize(info);
-	}
-
-bool ScheduleExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-
-	when = Expr::Unserialize(info);
-	if ( ! when )
-		return false;
-
-	event = (EventExpr*) Expr::Unserialize(info, EXPR_EVENT);
-	return event != 0;
 	}
 
 InExpr::InExpr(Expr* arg_op1, Expr* arg_op2)
@@ -4704,20 +4118,6 @@ Val* InExpr::Fold(Val* v1, Val* v2) const
 		return val_mgr->GetBool(1);
 	else
 		return val_mgr->GetBool(0);
-	}
-
-IMPLEMENT_SERIAL(InExpr, SER_IN_EXPR);
-
-bool InExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_IN_EXPR, BinaryExpr);
-	return true;
-	}
-
-bool InExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BinaryExpr);
-	return true;
 	}
 
 CallExpr::CallExpr(Expr* arg_func, ListExpr* arg_args, bool in_hook)
@@ -4917,24 +4317,94 @@ void CallExpr::ExprDescribe(ODesc* d) const
 		args->Describe(d);
 	}
 
-IMPLEMENT_SERIAL(CallExpr, SER_CALL_EXPR);
-
-bool CallExpr::DoSerialize(SerialInfo* info) const
+LambdaExpr::LambdaExpr(std::unique_ptr<function_ingredients> arg_ing,
+		       id_list arg_outer_ids) : Expr(EXPR_LAMBDA)
 	{
-	DO_SERIALIZE(SER_CALL_EXPR, Expr);
-	return func->Serialize(info) && args->Serialize(info);
+	ingredients = std::move(arg_ing);
+	outer_ids = std::move(arg_outer_ids);
+
+	SetType(ingredients->id->Type()->Ref());
+
+	// Install a dummy version of the function globally for use only
+	// when broker provides a closure.
+	BroFunc* dummy_func = new BroFunc(
+		ingredients->id,
+		ingredients->body,
+		ingredients->inits,
+		ingredients->frame_size,
+		ingredients->priority);
+
+	dummy_func->SetOuterIDs(outer_ids);
+
+	// Get the body's "string" representation.
+	ODesc d;
+	dummy_func->Describe(&d);
+
+	for ( ; ; )
+		{
+		uint64_t h[2];
+		internal_md5(d.Bytes(), d.Len(), reinterpret_cast<unsigned char*>(h));
+
+		my_name = "lambda_<" + std::to_string(h[0]) + ">";
+		auto fullname = make_full_var_name(current_module.data(), my_name.data());
+		auto id = global_scope()->Lookup(fullname);
+
+		if ( id )
+			// Just try again to make a unique lambda name.  If two peer
+			// processes need to agree on the same lambda name, this assumes
+			// they're loading the same scripts and thus have the same hash
+			// collisions.
+			d.Add(" ");
+		else
+			break;
+		}
+
+	// Install that in the global_scope
+	ID* id = install_ID(my_name.c_str(), current_module.c_str(), true, false);
+
+	// Update lamb's name
+	dummy_func->SetName(my_name.c_str());
+
+	Val* v = new Val(dummy_func);
+	id->SetVal(v); // id will unref v when its done.
+	id->SetType(ingredients->id->Type()->Ref());
+	id->SetConst();
 	}
 
-bool CallExpr::DoUnserialize(UnserialInfo* info)
+Val* LambdaExpr::Eval(Frame* f) const
 	{
-	DO_UNSERIALIZE(Expr);
+	BroFunc* lamb = new BroFunc(
+		ingredients->id,
+		ingredients->body,
+		ingredients->inits,
+		ingredients->frame_size,
+		ingredients->priority);
 
-	func = Expr::Unserialize(info);
-	if ( ! func )
-		return false;
+	lamb->AddClosure(outer_ids, f);
 
-	args = (ListExpr*) Expr::Unserialize(info, EXPR_LIST);
-	return args != 0;
+	// Set name to corresponding dummy func.
+	// Allows for lookups by the receiver.
+	lamb->SetName(my_name.c_str());
+
+	return new Val(lamb);
+	}
+
+void LambdaExpr::ExprDescribe(ODesc* d) const
+	{
+	d->Add(expr_name(Tag()));
+	ingredients->body->Describe(d);
+	}
+
+TraversalCode LambdaExpr::Traverse(TraversalCallback* cb) const
+	{
+	TraversalCode tc = cb->PreExpr(this);
+	HANDLE_TC_EXPR_PRE(tc);
+
+	tc = ingredients->body->Traverse(cb);
+	HANDLE_TC_STMT_PRE(tc);
+
+	tc = cb->PostExpr(this);
+	HANDLE_TC_EXPR_POST(tc);
 	}
 
 EventExpr::EventExpr(const char* arg_name, ListExpr* arg_args)
@@ -4943,7 +4413,7 @@ EventExpr::EventExpr(const char* arg_name, ListExpr* arg_args)
 	name = arg_name;
 	args = arg_args;
 
-	EventHandler* h = event_registry->Lookup(name.c_str());
+	EventHandler* h = event_registry->Lookup(name);
 	if ( ! h )
 		{
 		h = new EventHandler(name.c_str());
@@ -5022,35 +4492,6 @@ void EventExpr::ExprDescribe(ODesc* d) const
 		args->Describe(d);
 	}
 
-IMPLEMENT_SERIAL(EventExpr, SER_EVENT_EXPR);
-
-bool EventExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_EVENT_EXPR, Expr);
-
-	if ( ! handler->Serialize(info) )
-		return false;
-
-	return SERIALIZE(name) && args->Serialize(info);
-	}
-
-bool EventExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-
-	EventHandler* h = EventHandler::Unserialize(info);
-	if ( ! h )
-		return false;
-
-	handler = h;
-
-	if ( ! UNSERIALIZE(&name) )
-		return false;
-
-	args = (ListExpr*) Expr::Unserialize(info, EXPR_LIST);
-	return args;
-	}
-
 ListExpr::ListExpr() : Expr(EXPR_LIST)
 	{
 	SetType(new TypeList());
@@ -5064,20 +4505,20 @@ ListExpr::ListExpr(Expr* e) : Expr(EXPR_LIST)
 
 ListExpr::~ListExpr()
 	{
-	loop_over_list(exprs, i)
-		Unref(exprs[i]);
+	for ( const auto& expr: exprs )
+		Unref(expr);
 	}
 
 void ListExpr::Append(Expr* e)
 	{
-	exprs.append(e);
+	exprs.push_back(e);
 	((TypeList*) type)->Append(e->Type()->Ref());
 	}
 
 int ListExpr::IsPure() const
 	{
-	loop_over_list(exprs, i)
-		if ( ! exprs[i]->IsPure() )
+	for ( const auto& expr : exprs )
+		if ( ! expr->IsPure() )
 			return 0;
 
 	return 1;
@@ -5085,8 +4526,8 @@ int ListExpr::IsPure() const
 
 int ListExpr::AllConst() const
 	{
-	loop_over_list(exprs, i)
-		if ( ! exprs[i]->IsConst() )
+	for ( const auto& expr : exprs )
+		if ( ! expr->IsConst() )
 			return 0;
 
 	return 1;
@@ -5096,9 +4537,9 @@ Val* ListExpr::Eval(Frame* f) const
 	{
 	ListVal* v = new ListVal(TYPE_ANY);
 
-	loop_over_list(exprs, i)
+	for ( const auto& expr : exprs )
 		{
-		Val* ev = exprs[i]->Eval(f);
+		Val* ev = expr->Eval(f);
 		if ( ! ev )
 			{
 			RuntimeError("uninitialized list value");
@@ -5123,18 +4564,18 @@ BroType* ListExpr::InitType() const
 	if ( exprs[0]->IsRecordElement(0) )
 		{
 		type_decl_list* types = new type_decl_list(exprs.length());
-		loop_over_list(exprs, i)
+		for ( const auto& expr : exprs )
 			{
 			TypeDecl* td = new TypeDecl(0, 0);
-			if ( ! exprs[i]->IsRecordElement(td) )
+			if ( ! expr->IsRecordElement(td) )
 				{
-				exprs[i]->Error("record element expected");
+				expr->Error("record element expected");
 				delete td;
 				delete types;
 				return 0;
 				}
 
-			types->append(td);
+			types->push_back(td);
 			}
 
 
@@ -5144,9 +4585,8 @@ BroType* ListExpr::InitType() const
 	else
 		{
 		TypeList* tl = new TypeList();
-		loop_over_list(exprs, i)
+		for ( const auto& e : exprs )
 			{
-			Expr* e = exprs[i];
 			BroType* ti = e->Type();
 
 			// Collapse any embedded sets or lists.
@@ -5280,10 +4720,8 @@ Val* ListExpr::InitVal(const BroType* t, Val* aggr) const
 	// know how to add themselves to a table or record.  Another
 	// possibility is an expression that evaluates itself to a
 	// table, which we can then add to the aggregate.
-	loop_over_list(exprs, i)
+	for ( const auto& e : exprs )
 		{
-		Expr* e = exprs[i];
-
 		if ( e->Tag() == EXPR_ASSIGN || e->Tag() == EXPR_FIELD_ASSIGN )
 			{
 			if ( ! e->InitVal(t, aggr) )
@@ -5321,17 +4759,17 @@ Val* ListExpr::AddSetInit(const BroType* t, Val* aggr) const
 	const TableType* tt = tv->Type()->AsTableType();
 	const TypeList* it = tt->Indices();
 
-	loop_over_list(exprs, i)
+	for ( const auto& expr : exprs )
 		{
 		Val* element;
 
-		if ( exprs[i]->Type()->IsSet() )
+		if ( expr->Type()->IsSet() )
 			// A set to flatten.
-			element = exprs[i]->Eval(0);
-		else if ( exprs[i]->Type()->Tag() == TYPE_LIST )
-			element = exprs[i]->InitVal(it, 0);
+			element = expr->Eval(0);
+		else if ( expr->Type()->Tag() == TYPE_LIST )
+			element = expr->InitVal(it, 0);
 		else
-			element = exprs[i]->InitVal((*it->Types())[0], 0);
+			element = expr->InitVal((*it->Types())[0], 0);
 
 		if ( ! element )
 			return 0;
@@ -5350,7 +4788,7 @@ Val* ListExpr::AddSetInit(const BroType* t, Val* aggr) const
 			continue;
 			}
 
-		if ( exprs[i]->Type()->Tag() == TYPE_LIST )
+		if ( expr->Type()->Tag() == TYPE_LIST )
 			element = check_and_promote(element, it, 1);
 		else
 			element = check_and_promote(element, (*it->Types())[0], 1);
@@ -5386,14 +4824,14 @@ void ListExpr::ExprDescribe(ODesc* d) const
 
 Expr* ListExpr::MakeLvalue()
 	{
-	loop_over_list(exprs, i)
-		if ( exprs[i]->Tag() != EXPR_NAME )
+	for ( const auto & expr : exprs )
+		if ( expr->Tag() != EXPR_NAME )
 			ExprError("can only assign to list of identifiers");
 
 	return new RefExpr(this);
 	}
 
-void ListExpr::Assign(Frame* f, Val* v, Opcode op)
+void ListExpr::Assign(Frame* f, Val* v)
 	{
 	ListVal* lv = v->AsListVal();
 
@@ -5401,7 +4839,7 @@ void ListExpr::Assign(Frame* f, Val* v, Opcode op)
 		RuntimeError("mismatch in list lengths");
 
 	loop_over_list(exprs, i)
-		exprs[i]->Assign(f, (*lv->Vals())[i]->Ref(), op);
+		exprs[i]->Assign(f, (*lv->Vals())[i]->Ref());
 
 	Unref(lv);
 	}
@@ -5411,50 +4849,14 @@ TraversalCode ListExpr::Traverse(TraversalCallback* cb) const
 	TraversalCode tc = cb->PreExpr(this);
 	HANDLE_TC_EXPR_PRE(tc);
 
-	loop_over_list(exprs, i)
+	for ( const auto& expr : exprs )
 		{
-		tc = exprs[i]->Traverse(cb);
+		tc = expr->Traverse(cb);
 		HANDLE_TC_EXPR_PRE(tc);
 		}
 
 	tc = cb->PostExpr(this);
 	HANDLE_TC_EXPR_POST(tc);
-	}
-
-IMPLEMENT_SERIAL(ListExpr, SER_LIST_EXPR);
-
-bool ListExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_LIST_EXPR, Expr);
-
-	if ( ! SERIALIZE(exprs.length()) )
-		return false;
-
-	loop_over_list(exprs, i)
-		if ( ! exprs[i]->Serialize(info) )
-			return false;
-
-	return true;
-	}
-
-bool ListExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Expr);
-
-	int len;
-	if ( ! UNSERIALIZE(&len) )
-		return false;
-
-	while ( len-- )
-		{
-		Expr* e = Expr::Unserialize(info);
-		if ( ! e )
-			return false;
-
-		exprs.append(e);
-		}
-
-	return true;
 	}
 
 RecordAssignExpr::RecordAssignExpr(Expr* record, Expr* init_list, int is_init)
@@ -5468,11 +4870,11 @@ RecordAssignExpr::RecordAssignExpr(Expr* record, Expr* init_list, int is_init)
 	// 2) a string indicating the field name, then (as the next element)
 	//    the value to use for that field.
 
-	for ( int i = 0; i < inits.length(); ++i )
+	for ( const auto& init : inits )
 		{
-		if ( inits[i]->Type()->Tag() == TYPE_RECORD )
+		if ( init->Type()->Tag() == TYPE_RECORD )
 			{
-			RecordType* t = inits[i]->Type()->AsRecordType();
+			RecordType* t = init->Type()->AsRecordType();
 
 			for ( int j = 0; j < t->NumFields(); ++j )
 				{
@@ -5483,15 +4885,15 @@ RecordAssignExpr::RecordAssignExpr(Expr* record, Expr* init_list, int is_init)
 				     same_type(lhs->FieldType(field), t->FieldType(j)) )
 					{
 					FieldExpr* fe_lhs = new FieldExpr(record, field_name);
-					FieldExpr* fe_rhs = new FieldExpr(inits[i], field_name);
+					FieldExpr* fe_rhs = new FieldExpr(init, field_name);
 					Append(get_assign_expr(fe_lhs->Ref(), fe_rhs->Ref(), is_init));
 					}
 				}
 			}
 
-		else if ( inits[i]->Tag() == EXPR_FIELD_ASSIGN )
+		else if ( init->Tag() == EXPR_FIELD_ASSIGN )
 			{
-			FieldAssignExpr* rf = (FieldAssignExpr*) inits[i];
+			FieldAssignExpr* rf = (FieldAssignExpr*) init;
 			rf->Ref();
 
 			const char* field_name = ""; // rf->FieldName();
@@ -5516,20 +4918,6 @@ RecordAssignExpr::RecordAssignExpr(Expr* record, Expr* init_list, int is_init)
 			return;
 			}
 		}
-	}
-
-IMPLEMENT_SERIAL(RecordAssignExpr, SER_RECORD_ASSIGN_EXPR);
-
-bool RecordAssignExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_RECORD_ASSIGN_EXPR, ListExpr);
-	return true;
-	}
-
-bool RecordAssignExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(ListExpr);
-	return true;
 	}
 
 CastExpr::CastExpr(Expr* arg_op, BroType* t) : UnaryExpr(EXPR_CAST, arg_op)
@@ -5584,20 +4972,6 @@ void CastExpr::ExprDescribe(ODesc* d) const
 	Type()->Describe(d);
 	}
 
-IMPLEMENT_SERIAL(CastExpr, SER_CAST_EXPR);
-
-bool CastExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_CAST_EXPR, UnaryExpr);
-	return true;
-	}
-
-bool CastExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 IsExpr::IsExpr(Expr* arg_op, BroType* arg_t) : UnaryExpr(EXPR_IS, arg_op)
 	{
 	t = arg_t;
@@ -5629,25 +5003,13 @@ void IsExpr::ExprDescribe(ODesc* d) const
 	t->Describe(d);
 	}
 
-IMPLEMENT_SERIAL(IsExpr, SER_IS_EXPR_ /* sic */);
-
-bool IsExpr::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_IS_EXPR_, UnaryExpr);
-	return true;
-	}
-
-bool IsExpr::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(UnaryExpr);
-	return true;
-	}
-
 Expr* get_assign_expr(Expr* op1, Expr* op2, int is_init)
 	{
 	if ( op1->Type()->Tag() == TYPE_RECORD &&
 	     op2->Type()->Tag() == TYPE_LIST )
 		return new RecordAssignExpr(op1, op2, is_init);
+	else if ( op1->Tag() == EXPR_INDEX && op1->AsIndexExpr()->IsSlice() )
+		return new IndexSliceAssignExpr(op1, op2, is_init);
 	else
 		return new AssignExpr(op1, op2, is_init);
 	}
@@ -5792,11 +5154,11 @@ int check_and_promote_args(ListExpr*& args, RecordType* types)
 				return 0;
 				}
 
-			def_elements.insert(def_attr->AttrExpr());
+			def_elements.push_front(def_attr->AttrExpr());
 			}
 
-		loop_over_list(def_elements, i)
-			el.append(def_elements[i]->Ref());
+		for ( const auto& elem : def_elements )
+			el.push_back(elem->Ref());
 		}
 
 	TypeList* tl = new TypeList();
@@ -5838,18 +5200,22 @@ val_list* eval_list(Frame* f, const ListExpr* l)
 	const expr_list& e = l->Exprs();
 	val_list* v = new val_list(e.length());
 
-	loop_over_list(e, i)
+	bool success = true;
+	for ( const auto& expr : e )
 		{
-		Val* ev = e[i]->Eval(f);
+		Val* ev = expr->Eval(f);
 		if ( ! ev )
+			{
+			success = false;
 			break;
-		v->append(ev);
+			}
+		v->push_back(ev);
 		}
 
-	if ( i < e.length() )
+	if ( ! success )
 		{ // Failure.
-		loop_over_list(*v, j)
-			Unref((*v)[j]);
+		for ( const auto& val : *v )
+			Unref(val);
 		delete v;
 		return 0;
 		}

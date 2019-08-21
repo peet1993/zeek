@@ -28,12 +28,12 @@ Config::Config(ReaderFrontend *frontend) : ReaderBackend(frontend)
 	fail_on_file_problem = false;
 
 	// find all option names and their types.
-	auto globals = global_scope()->Vars();
-	auto c = globals->InitForIteration();
+	const auto& globals = global_scope()->Vars();
 
-	while ( auto id = globals->NextEntry(c) )
+	for ( const auto& entry : globals )
 		{
-		if ( id->IsInternalGlobal() || ! id->IsOption() )
+		ID* id = entry.second;
+		if ( ! id->IsOption() )
 			continue;
 
 		if ( id->Type()->Tag() == TYPE_RECORD ||
@@ -151,11 +151,15 @@ bool Config::DoUpdate()
 				// no change
 				return true;
 
+			// Warn again in case of trouble if the file changes. The comparison to 0
+			// is to suppress an extra warning that we'd otherwise get on the initial
+			// inode assignment.
+			if ( ino != 0 )
+				suppress_warnings = false;
+
 			mtime = sb.st_mtime;
 			ino = sb.st_ino;
-			// file changed. reread.
-
-			// fallthrough
+			// File changed. Fall through to re-read.
 			}
 
 		case MODE_MANUAL:
@@ -309,8 +313,8 @@ bool Config::DoHeartbeat(double network_time, double current_time)
 
 		case MODE_REREAD:
 		case MODE_STREAM:
-			Update(); // call update and not DoUpdate, because update
-				  // checks disabled.
+			Update(); // Call Update, not DoUpdate, because Update
+				  // checks the "disabled" flag.
 			break;
 
 		default:

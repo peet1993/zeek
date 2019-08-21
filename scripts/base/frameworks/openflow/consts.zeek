@@ -1,7 +1,7 @@
 ##! Constants used by the OpenFlow framework.
 
 # All types/constants not specific to OpenFlow will be defined here
-# until they somehow get into Bro.
+# until they somehow get into Zeek.
 
 module OpenFlow;
 
@@ -10,8 +10,8 @@ module OpenFlow;
 const COOKIE_BID_SIZE = 16777216;
 # start at bit 40 (1 << 40)
 const COOKIE_BID_START = 1099511627776;
-# bro specific cookie ID shall have the 42 bit set (1 << 42)
-const BRO_COOKIE_ID = 4;
+# Zeek specific cookie ID shall have the 42 bit set (1 << 42)
+const ZEEK_COOKIE_ID = 4;
 # 8 bits group identifier
 const COOKIE_GID_SIZE = 256;
 # start at bit 32 (1 << 32)
@@ -122,7 +122,7 @@ export {
 
 	## Return value for a cookie from a flow
 	## which is not added, modified or deleted
-	## from the bro openflow framework.
+	## from the Zeek openflow framework.
 	const INVALID_COOKIE = 0xffffffffffffffff;
 	# Openflow physical port definitions
 	## Send the packet out the input port. This

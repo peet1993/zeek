@@ -2,7 +2,7 @@
 
 #include <assert.h>
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include "Source.h"
 #include "iosource/Packet.h"
@@ -57,18 +57,41 @@ void PcapSource::OpenLive()
 
 	// Determine interface if not specified.
 	if ( props.path.empty() )
-		props.path = pcap_lookupdev(tmp_errbuf);
-
-	if ( props.path.empty() )
 		{
-		safe_snprintf(errbuf, sizeof(errbuf),
-			 "pcap_lookupdev: %s", tmp_errbuf);
-		Error(errbuf);
-		return;
+		pcap_if_t* devs;
+
+		if ( pcap_findalldevs(&devs, tmp_errbuf) < 0 )
+			{
+			safe_snprintf(errbuf, sizeof(errbuf),
+			             "pcap_findalldevs: %s", tmp_errbuf);
+			Error(errbuf);
+			return;
+			}
+
+		if ( devs )
+			{
+			props.path = devs->name;
+			pcap_freealldevs(devs);
+
+			if ( props.path.empty() )
+				{
+				safe_snprintf(errbuf, sizeof(errbuf),
+				              "pcap_findalldevs: empty device name");
+				Error(errbuf);
+				return;
+				}
+			}
+		else
+			{
+			safe_snprintf(errbuf, sizeof(errbuf),
+			              "pcap_findalldevs: no devices found");
+			Error(errbuf);
+			return;
+			}
 		}
 
 	// Determine network and netmask.
-	uint32 net;
+	uint32_t net;
 	if ( pcap_lookupnet(props.path.c_str(), &net, &props.netmask, tmp_errbuf) < 0 )
 		{
 		// ### The lookup can fail if no address is assigned to

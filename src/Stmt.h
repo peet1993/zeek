@@ -17,8 +17,6 @@
 class StmtList;
 class ForStmt;
 
-declare(PDict, int);
-
 class Stmt : public BroObj {
 public:
 	BroStmtTag Tag() const	{ return tag; }
@@ -56,7 +54,7 @@ public:
 
 	void RegisterAccess() const	{ last_access = network_time; access_count++; }
 	void AccessStats(ODesc* d) const;
-	uint32 GetAccessCount() const { return access_count; }
+	uint32_t GetAccessCount() const { return access_count; }
 
 	void Describe(ODesc* d) const override;
 
@@ -71,9 +69,6 @@ public:
 
 	virtual unsigned int BPCount() const	{ return breakpoint_count; }
 
-	bool Serialize(SerialInfo* info) const;
-	static Stmt* Unserialize(UnserialInfo* info, BroStmtTag want = STMT_ANY);
-
 	virtual TraversalCode Traverse(TraversalCallback* cb) const = 0;
 
 protected:
@@ -83,14 +78,12 @@ protected:
 	void AddTag(ODesc* d) const;
 	void DescribeDone(ODesc* d) const;
 
-	DECLARE_ABSTRACT_SERIAL(Stmt);
-
 	BroStmtTag tag;
 	int breakpoint_count;	// how many breakpoints on this statement
 
 	// FIXME: Learn the exact semantics of mutable.
 	mutable double last_access;	// time of last execution
-	mutable uint32 access_count;	// number of executions
+	mutable uint32_t access_count;	// number of executions
 };
 
 class ExprListStmt : public Stmt {
@@ -111,8 +104,6 @@ protected:
 	void Describe(ODesc* d) const override;
 	void PrintVals(ODesc* d, val_list* vals, int offset) const;
 
-	DECLARE_ABSTRACT_SERIAL(ExprListStmt);
-
 	ListExpr* l;
 };
 
@@ -125,8 +116,6 @@ protected:
 	PrintStmt()	{}
 
 	Val* DoExec(val_list* vals, stmt_flow_type& flow) const override;
-
-	DECLARE_SERIAL(PrintStmt);
 };
 
 class ExprStmt : public Stmt {
@@ -151,8 +140,6 @@ protected:
 
 	int IsPure() const override;
 
-	DECLARE_SERIAL(ExprStmt);
-
 	Expr* e;
 };
 
@@ -175,8 +162,6 @@ protected:
 	Val* DoExec(Frame* f, Val* v, stmt_flow_type& flow) const override;
 	int IsPure() const override;
 
-	DECLARE_SERIAL(IfStmt);
-
 	Stmt* s1;
 	Stmt* s2;
 };
@@ -197,24 +182,18 @@ public:
 
 	void Describe(ODesc* d) const override;
 
-	bool Serialize(SerialInfo* info) const;
-	static Case* Unserialize(UnserialInfo* info);
-
 	TraversalCode Traverse(TraversalCallback* cb) const;
 
 protected:
 	friend class Stmt;
 	Case()	{ expr_cases = 0; type_cases = 0; s = 0; }
 
-	DECLARE_SERIAL(Case);
-
 	ListExpr* expr_cases;
 	id_list* type_cases;
 	Stmt* s;
 };
 
-declare(PList,Case);
-typedef PList(Case) case_list;
+typedef PList<Case> case_list;
 
 class SwitchStmt : public ExprStmt {
 public:
@@ -233,8 +212,6 @@ protected:
 
 	Val* DoExec(Frame* f, Val* v, stmt_flow_type& flow) const override;
 	int IsPure() const override;
-
-	DECLARE_SERIAL(SwitchStmt);
 
 	// Initialize composite hash and case label map.
 	void Init();
@@ -258,7 +235,7 @@ protected:
 	case_list* cases;
 	int default_case_idx;
 	CompositeHash* comp_hash;
-	PDict(int) case_label_value_map;
+	PDict<int> case_label_value_map;
 	std::vector<std::pair<ID*, int>> case_label_type_list;
 };
 
@@ -274,8 +251,6 @@ public:
 protected:
 	friend class Stmt;
 	AddStmt()	{}
-
-	DECLARE_SERIAL(AddStmt);
 };
 
 class DelStmt : public ExprStmt {
@@ -290,8 +265,6 @@ public:
 protected:
 	friend class Stmt;
 	DelStmt()	{}
-
-	DECLARE_SERIAL(DelStmt);
 };
 
 class EventStmt : public ExprStmt {
@@ -305,8 +278,6 @@ public:
 protected:
 	friend class Stmt;
 	EventStmt()	{ event_expr = 0; }
-
-	DECLARE_SERIAL(EventStmt);
 
 	EventExpr* event_expr;
 };
@@ -330,8 +301,6 @@ protected:
 		{ loop_condition = 0; body = 0; }
 
 	Val* Exec(Frame* f, stmt_flow_type& flow) const override;
-
-	DECLARE_SERIAL(WhileStmt);
 
 	Expr* loop_condition;
 	Stmt* body;
@@ -362,8 +331,6 @@ protected:
 
 	Val* DoExec(Frame* f, Val* v, stmt_flow_type& flow) const override;
 
-	DECLARE_SERIAL(ForStmt);
-
 	id_list* loop_vars;
 	Stmt* body;
 	// Stores the value variable being used for a key value for loop.
@@ -383,7 +350,6 @@ public:
 	TraversalCode Traverse(TraversalCallback* cb) const override;
 
 protected:
-	DECLARE_SERIAL(NextStmt);
 };
 
 class BreakStmt : public Stmt {
@@ -398,7 +364,6 @@ public:
 	TraversalCode Traverse(TraversalCallback* cb) const override;
 
 protected:
-	DECLARE_SERIAL(BreakStmt);
 };
 
 class FallthroughStmt : public Stmt {
@@ -413,7 +378,6 @@ public:
 	TraversalCode Traverse(TraversalCallback* cb) const override;
 
 protected:
-	DECLARE_SERIAL(FallthroughStmt);
 };
 
 class ReturnStmt : public ExprStmt {
@@ -427,8 +391,6 @@ public:
 protected:
 	friend class Stmt;
 	ReturnStmt()	{}
-
-	DECLARE_SERIAL(ReturnStmt);
 };
 
 class StmtList : public Stmt {
@@ -448,8 +410,6 @@ public:
 protected:
 	int IsPure() const override;
 
-	DECLARE_SERIAL(StmtList);
-
 	stmt_list stmts;
 };
 
@@ -467,9 +427,6 @@ public:
 	// bool IsTopmost()	{ return topmost; }
 
 protected:
-
-	DECLARE_SERIAL(EventBodyList);
-
 	bool topmost;
 };
 
@@ -496,8 +453,6 @@ protected:
 	friend class Stmt;
 	InitStmt()	{ inits = 0; }
 
-	DECLARE_SERIAL(InitStmt);
-
 	id_list* inits;
 };
 
@@ -511,9 +466,6 @@ public:
 	void Describe(ODesc* d) const override;
 
 	TraversalCode Traverse(TraversalCallback* cb) const override;
-
-protected:
-	DECLARE_SERIAL(NullStmt);
 };
 
 class WhenStmt : public Stmt {
@@ -536,8 +488,6 @@ public:
 
 protected:
 	WhenStmt()	{ cond = 0; s1 = s2 = 0; timeout = 0; is_return = 0; }
-
-	DECLARE_SERIAL(WhenStmt);
 
 	Expr* cond;
 	Stmt* s1;

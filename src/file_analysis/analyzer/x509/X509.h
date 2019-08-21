@@ -5,7 +5,7 @@
 
 #include <string>
 
-#include "Val.h"
+#include "OpaqueVal.h"
 #include "X509Common.h"
 
 #if ( OPENSSL_VERSION_NUMBER < 0x10002000L ) || defined(LIBRESSL_VERSION_NUMBER)
@@ -68,8 +68,8 @@ class X509Val;
 
 class X509 : public file_analysis::X509Common {
 public:
-	bool DeliverStream(const u_char* data, uint64 len) override;
-	bool Undelivered(uint64 offset, uint64 len) override;
+	bool DeliverStream(const u_char* data, uint64_t len) override;
+	bool Undelivered(uint64_t offset, uint64_t len) override;
 	bool EndOfFile() override;
 
 	/**
@@ -124,6 +124,15 @@ public:
 	explicit X509Val(::X509* certificate);
 
 	/**
+	 * Clone an X509Val
+	 *
+	 * @param state certifies the state of the clone operation (duplicate tracking)
+	 *
+	 * @return A cloned X509Val.
+	 */
+	Val* DoClone(CloneState* state) override;
+
+	/**
 	 * Destructor.
 	 */
 	~X509Val() override;
@@ -142,10 +151,9 @@ protected:
 	 */
 	X509Val();
 
+	DECLARE_OPAQUE_VALUE(X509Val)
 private:
 	::X509* certificate; // the wrapped certificate
-
-	DECLARE_SERIAL(X509Val);
 };
 
 }

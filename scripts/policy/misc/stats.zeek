@@ -99,8 +99,8 @@ event check_stats(then: time, last_ns: NetStats, last_cs: ConnStats, last_ps: Pr
 	local fs = get_file_analysis_stats();
 	local ds = get_dns_stats();
 
-	if ( bro_is_terminating() )
-		# No more stats will be written or scheduled when Bro is
+	if ( zeek_is_terminating() )
+		# No more stats will be written or scheduled when Zeek is
 		# shutting down.
 		return;
 

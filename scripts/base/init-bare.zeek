@@ -96,6 +96,13 @@ type table_string_of_count: table[string] of count;
 ##    directly and then remove this alias.
 type files_tag_set: set[Files::Tag];
 
+## A set of intervals.
+##
+## .. todo:: We need this type definition only for declaring builtin functions
+##    via ``bifcl``. We should extend ``bifcl`` to understand composite types
+##    directly and then remove this alias.
+type interval_set: set[interval];
+
 ## A structure indicating a MIME type and strength of a match against
 ## file magic signatures.
 ##
@@ -113,7 +120,7 @@ type mime_match: record {
 ## :zeek:see:`file_magic`
 type mime_matches: vector of mime_match;
 
-## A connection's transport-layer protocol. Note that Bro uses the term
+## A connection's transport-layer protocol. Note that Zeek uses the term
 ## "connection" broadly, using flow semantics for ICMP and UDP.
 type transport_proto: enum {
     unknown_transport,	##< An unknown transport-layer protocol.
@@ -235,7 +242,7 @@ type icmp6_nd_option: record {
 ## A type alias for a vector of ICMPv6 neighbor discovery message options.
 type icmp6_nd_options: vector of icmp6_nd_option;
 
-# A DNS mapping between IP address and hostname resolved by Bro's internal
+# A DNS mapping between IP address and hostname resolved by Zeek's internal
 # resolver.
 #
 # .. zeek:see:: dns_mapping_altered dns_mapping_lost_name dns_mapping_new_name
@@ -340,8 +347,8 @@ type endpoint: record {
 	l2_addr: string &optional;
 };
 
-## A connection. This is Bro's basic connection type describing IP- and
-## transport-layer information about the conversation. Note that Bro uses a
+## A connection. This is Zeek's basic connection type describing IP- and
+## transport-layer information about the conversation. Note that Zeek uses a
 ## liberal interpretation of "connection" and associates instances of this type
 ## also with UDP and ICMP flows.
 type connection: record {
@@ -353,7 +360,7 @@ type connection: record {
 	## interval between first and last data packet (low-level TCP details
 	## may adjust it somewhat in ambiguous cases).
 	duration: interval;
-	## The set of services the connection is using as determined by Bro's
+	## The set of services the connection is using as determined by Zeek's
 	## dynamic protocol detection. Each entry is the label of an analyzer
 	## that confirmed that it could parse the connection payload.  While
 	## typically, there will be at most one entry for each connection, in
@@ -362,8 +369,8 @@ type connection: record {
 	## the recorded services are independent of any transport-level protocols.
 	service: set[string];
 	history: string;	##< State history of connections. See *history* in :zeek:see:`Conn::Info`.
-	## A globally unique connection identifier. For each connection, Bro
-	## creates an ID that is very likely unique across independent Bro runs.
+	## A globally unique connection identifier. For each connection, Zeek
+	## creates an ID that is very likely unique across independent Zeek runs.
 	## These IDs can thus be used to tag and locate information associated
 	## with that connection.
 	uid: string;
@@ -390,7 +397,7 @@ option default_file_timeout_interval: interval = 2 mins;
 ## matching or later, will receive a copy of this buffer.
 option default_file_bof_buffer_size: count = 4096;
 
-## A file that Bro is analyzing.  This is Bro's type for describing the basic
+## A file that Zeek is analyzing.  This is Zeek's type for describing the basic
 ## internal metadata collected about a "file", which is essentially just a
 ## byte stream that is e.g. pulled from a network connection or possibly
 ## some other input source.
@@ -476,7 +483,7 @@ type SYN_packet: record {
 ##
 ## .. zeek:see:: get_net_stats
 type NetStats: record {
-	pkts_recvd:   count &default=0;	##< Packets received by Bro.
+	pkts_recvd:   count &default=0;	##< Packets received by Zeek.
 	pkts_dropped: count &default=0;	##< Packets reported dropped by the system.
 	## Packets seen on the link. Note that this may differ
 	## from *pkts_recvd* because of a potential capture_filter. See
@@ -484,7 +491,7 @@ type NetStats: record {
 	## packet capture system, this value may not be available and will then
 	## be always set to zero.
 	pkts_link:    count &default=0;
-	bytes_recvd:  count &default=0;	##< Bytes received by Bro.
+	bytes_recvd:  count &default=0;	##< Bytes received by Zeek.
 };
 
 type ConnStats: record {
@@ -512,16 +519,16 @@ type ConnStats: record {
 	killed_by_inactivity: count;
 };
 
-## Statistics about Bro's process.
+## Statistics about Zeek's process.
 ##
 ## .. zeek:see:: get_proc_stats
 ##
-## .. note:: All process-level values refer to Bro's main process only, not to
+## .. note:: All process-level values refer to Zeek's main process only, not to
 ##    the child process it spawns for doing communication.
 type ProcStats: record {
 	debug: bool;                  ##< True if compiled with --enable-debug.
 	start_time: time;             ##< Start time of process.
-	real_time: interval;          ##< Elapsed real time since Bro started running.
+	real_time: interval;          ##< Elapsed real time since Zeek started running.
 	user_time: interval;          ##< User CPU seconds.
 	system_time: interval;        ##< System CPU seconds.
 	mem: count;                   ##< Maximum memory consumed, in KB.
@@ -579,8 +586,8 @@ type FileAnalysisStats: record {
 	cumulative: count; ##< Cumulative number of files analyzed.
 };
 
-## Statistics related to Bro's active use of DNS.  These numbers are
-## about Bro performing DNS queries on it's own, not traffic
+## Statistics related to Zeek's active use of DNS.  These numbers are
+## about Zeek performing DNS queries on it's own, not traffic
 ## being seen.
 ##
 ## .. zeek:see:: get_dns_stats
@@ -642,17 +649,6 @@ type ReporterStats: record {
 	## Number of times each individual weird is encountered, before any
 	## rate-limiting is applied.
 	weirds_by_type:	table[string] of count;
-};
-
-## Deprecated.
-##
-## .. todo:: Remove. It's still declared internally but doesn't seem  used anywhere
-##    else.
-type packet: record {
-	conn: connection;
-	is_orig: bool;
-	seq: count;	##< seq=k => it is the kth *packet* of the connection
-	timestamp: time;
 };
 
 ## Table type used to map variable names to their memory allocation.
@@ -735,7 +731,7 @@ type call_argument_vector: vector of call_argument;
 # dependent on the names remaining as they are now.
 
 ## Set of BPF capture filters to use for capturing, indexed by a user-definable
-## ID (which must be unique). If Bro is *not* configured with
+## ID (which must be unique). If Zeek is *not* configured with
 ## :zeek:id:`PacketFilter::enable_auto_protocol_capture_filters`,
 ## all packets matching at least one of the filters in this table (and all in
 ## :zeek:id:`restrict_filters`) will be analyzed.
@@ -755,8 +751,6 @@ global restrict_filters: table[string] of string &redef;
 ## :zeek:see:`Pcap::precompile_pcap_filter` and :zeek:see:`Pcap::precompile_pcap_filter`.
 type PcapFilterID: enum { None };
 
-## Deprecated.
-##
 ## .. zeek:see:: anonymize_addr
 type IPAddrAnonymization: enum {
 	KEEP_ORIG_ADDR,
@@ -766,8 +760,6 @@ type IPAddrAnonymization: enum {
 	PREFIX_PRESERVING_MD5,
 };
 
-## Deprecated.
-##
 ## .. zeek:see:: anonymize_addr
 type IPAddrAnonymizationClass: enum {
 	ORIG_ADDR,
@@ -775,9 +767,7 @@ type IPAddrAnonymizationClass: enum {
 	OTHER_ADDR,
 };
 
-## Deprecated.
-##
-## .. zeek:see:: rotate_file rotate_file_by_name rotate_interval
+## .. zeek:see:: rotate_file rotate_file_by_name
 type rotate_info: record {
 	old_name: string;	##< Original filename.
 	new_name: string;	##< File name after rotation.
@@ -866,7 +856,7 @@ const mmdb_dir: string = "" &redef;
 
 ## Computed entropy values. The record captures a number of measures that are
 ## computed in parallel. See `A Pseudorandom Number Sequence Test Program
-## <http://www.fourmilab.ch/random>`_ for more information, Bro uses the same
+## <http://www.fourmilab.ch/random>`_ for more information, Zeek uses the same
 ## code.
 ##
 ## .. zeek:see:: entropy_test_add entropy_test_finish entropy_test_init find_entropy
@@ -993,7 +983,7 @@ const tcp_max_above_hole_without_any_acks = 16384 &redef;
 
 ## If we've seen this much data without any of it being acked, we give up
 ## on that connection to avoid memory exhaustion due to buffering all that
-## stuff.  If set to zero, then we don't ever give up.  Ideally, Bro would
+## stuff.  If set to zero, then we don't ever give up.  Ideally, Zeek would
 ## track the current window on a connection and use it to infer that data
 ## has in fact gone too far, but for now we just make this quite beefy.
 ##
@@ -1112,9 +1102,6 @@ const table_expire_delay = 0.01 secs &redef;
 
 ## Time to wait before timing out a DNS request.
 const dns_session_timeout = 10 sec &redef;
-
-## Time to wait before timing out an NTP request.
-const ntp_session_timeout = 300 sec &redef;
 
 ## Time to wait before timing out an RPC request.
 const rpc_timeout = 24 sec &redef;
@@ -1788,41 +1775,15 @@ type gtp_delete_pdp_ctx_response_elements: record {
 	ext:   gtp_private_extension &optional;
 };
 
-# Prototypes of Bro built-in functions.
-@load base/bif/bro.bif
+# Prototypes of Zeek built-in functions.
+@load base/bif/zeek.bif
 @load base/bif/stats.bif
 @load base/bif/reporter.bif
 @load base/bif/strings.bif
 @load base/bif/option.bif
 
-## Deprecated. This is superseded by the new logging framework.
-global log_file_name: function(tag: string): string &redef;
-
-## Deprecated. This is superseded by the new logging framework.
-global open_log_file: function(tag: string): file &redef;
-
-## Specifies a directory for Bro to store its persistent state. All globals can
-## be declared persistent via the :zeek:attr:`&persistent` attribute.
-const state_dir = ".state" &redef;
-
-## Length of the delays inserted when storing state incrementally. To avoid
-## dropping packets when serializing larger volumes of persistent state to
-## disk, Bro interleaves the operation with continued packet processing.
-const state_write_delay = 0.01 secs &redef;
-
 global done_with_network = F;
 event net_done(t: time) { done_with_network = T; }
-
-function log_file_name(tag: string): string
-	{
-	local suffix = getenv("BRO_LOG_SUFFIX") == "" ? "log" : getenv("BRO_LOG_SUFFIX");
-	return fmt("%s.%s", tag, suffix);
-	}
-
-function open_log_file(tag: string): file
-	{
-	return open(log_file_name(tag));
-	}
 
 ## Internal function.
 function add_interface(iold: string, inew: string): string
@@ -1848,12 +1809,9 @@ function add_signature_file(sold: string, snew: string): string
 
 ## Signature files to read. Use ``redef signature_files  += "foo.sig"`` to
 ## extend. Signature files added this way will be searched relative to
-## ``BROPATH``.  Using the ``@load-sigs`` directive instead is preferred
+## ``ZEEKPATH``.  Using the ``@load-sigs`` directive instead is preferred
 ## since that can search paths relative to the current script.
 global signature_files = "" &add_func = add_signature_file;
-
-## ``p0f`` fingerprint file to use. Will be searched relative to ``BROPATH``.
-const passive_fingerprint_file = "base/misc/p0f.fp" &redef;
 
 ## Definition of "secondary filters". A secondary filter is a BPF filter given
 ## as index in this table. For each such filter, the corresponding event is
@@ -1868,7 +1826,7 @@ global secondary_filters: table[string] of event(filter: string, pkt: pkt_hdr)
 global discarder_maxlen = 128 &redef;
 
 ## Function for skipping packets based on their IP header. If defined, this
-## function will be called for all IP packets before Bro performs any further
+## function will be called for all IP packets before Zeek performs any further
 ## analysis. If the function signals to discard a packet, no further processing
 ## will be performed on it.
 ##
@@ -1884,7 +1842,7 @@ global discarder_maxlen = 128 &redef;
 global discarder_check_ip: function(p: pkt_hdr): bool;
 
 ## Function for skipping packets based on their TCP header. If defined, this
-## function will be called for all TCP packets before Bro performs any further
+## function will be called for all TCP packets before Zeek performs any further
 ## analysis. If the function signals to discard a packet, no further processing
 ## will be performed on it.
 ##
@@ -1902,7 +1860,7 @@ global discarder_check_ip: function(p: pkt_hdr): bool;
 global discarder_check_tcp: function(p: pkt_hdr, d: string): bool;
 
 ## Function for skipping packets based on their UDP header. If defined, this
-## function will be called for all UDP packets before Bro performs any further
+## function will be called for all UDP packets before Zeek performs any further
 ## analysis. If the function signals to discard a packet, no further processing
 ## will be performed on it.
 ##
@@ -1920,7 +1878,7 @@ global discarder_check_tcp: function(p: pkt_hdr, d: string): bool;
 global discarder_check_udp: function(p: pkt_hdr, d: string): bool;
 
 ## Function for skipping packets based on their ICMP header. If defined, this
-## function will be called for all ICMP packets before Bro performs any further
+## function will be called for all ICMP packets before Zeek performs any further
 ## analysis. If the function signals to discard a packet, no further processing
 ## will be performed on it.
 ##
@@ -1935,7 +1893,7 @@ global discarder_check_udp: function(p: pkt_hdr, d: string): bool;
 ##    Avoid using it.
 global discarder_check_icmp: function(p: pkt_hdr): bool;
 
-## Bro's watchdog interval.
+## Zeek's watchdog interval.
 const watchdog_interval = 10 sec &redef;
 
 ## The maximum number of timers to expire after processing each new
@@ -2534,26 +2492,6 @@ export {
 	};
 }
 
-module GLOBAL;
-
-## An NTP message.
-##
-## .. zeek:see:: ntp_message
-type ntp_msg: record {
-	id: count;	##< Message ID.
-	code: count;	##< Message code.
-	stratum: count;	##< Stratum.
-	poll: count;	##< Poll.
-	precision: int;	##< Precision.
-	distance: interval;	##< Distance.
-	dispersion: interval;	##< Dispersion.
-	ref_t: time;	##< Reference time.
-	originate_t: time;	##< Originating time.
-	receive_t: time;	##< Receive time.
-	xmit_t: time;	##< Send time.
-};
-
-
 module NTLM;
 
 export {
@@ -2711,7 +2649,7 @@ export {
 
 	## A set of file names used as named pipes over SMB. This
 	## only comes into play as a heuristic to identify named
-	## pipes when the drive mapping wasn't seen by Bro.
+	## pipes when the drive mapping wasn't seen by Zeek.
 	##
 	## .. zeek:see:: smb_pipe_connect_heuristic
 	const SMB::pipe_filenames: set[string] &redef;
@@ -3358,6 +3296,42 @@ export {
 		create_action : count;
 	};
 
+	## A series of integers flags used to set quota and content indexing control information for a file system volume in SMB2.
+	##
+	## For more information, see MS-SMB2:2.2.39 and MS-FSCC:2.5.2
+	##
+	type SMB2::Fscontrol: record {
+		## minimum amount of free disk space required to begin document filtering
+		free_space_start_filtering : int;
+		## minimum amount of free disk space required to continue document filtering
+		free_space_threshold       : int;
+		## minimum amount of free disk space required to continue document filtering
+		free_space_threshold       : int;
+		## default per-user disk quota
+		delete_quota_threshold     : count;
+		## default per-user disk limit
+		default_quota_limit        : count;
+		## file systems control flags passed as unsigned int
+		fs_control_flags           : count;
+	};
+
+	## This information class is used to query or set extended attribute (EA) information for a file.
+	##
+	## For more infomation, see MS-SMB2:2.2.39 and MS-FSCC:2.4.15
+	##
+	type SMB2::FileEA: record {
+		## Specifies the extended attribute name
+		ea_name  : string;
+		## Contains the extended attribute value
+		ea_value : string;
+	};
+
+	## A vector of extended attribute (EA) information for a file.
+	##
+	## For more infomation, see MS-SMB2:2.2.39 and MS-FSCC:2.4.15
+	##
+	type SMB2::FileEAs: vector of SMB2::FileEA;
+
 	## An SMB2 transform header (for SMB 3.x dialects with encryption enabled).
 	##
 	## For more information, see MS-SMB2:2.2.41
@@ -3526,6 +3500,20 @@ export {
 
 		## URL to find a proxy.pac for auto proxy config (Option 252)
 		auto_proxy_config: string &optional;
+
+		## The offset of the client's subnet in seconds from UTC. (Option 2)
+		time_offset:     int &optional;
+
+		## A list of :rfc:`868` time servers available to the client.
+		## (Option 4)
+		time_servers:    DHCP::Addrs &optional;
+
+		## A list of IEN 116 name servers available to the client. (Option 5)
+		name_servers:    DHCP::Addrs &optional;
+
+		## A list of IP addresses indicating NTP servers available to the
+		## client. (Option 42)
+		ntp_servers:     DHCP::Addrs &optional;
 	};
 }
 
@@ -3910,12 +3898,6 @@ type PE::SectionHeader: record {
 }
 module GLOBAL;
 
-## Deprecated.
-##
-## .. todo:: Remove. It's still declared internally but doesn't seem  used anywhere
-##    else.
-global irc_servers : set[addr] &redef;
-
 ## Internal to the stepping stone detector.
 const stp_delta: interval &redef;
 
@@ -3924,56 +3906,6 @@ const stp_idle_min: interval &redef;
 
 ## Internal to the stepping stone detector.
 global stp_skip_src: set[addr] &redef;
-
-## Deprecated.
-const interconn_min_interarrival: interval &redef;
-
-## Deprecated.
-const interconn_max_interarrival: interval &redef;
-
-## Deprecated.
-const interconn_max_keystroke_pkt_size: count &redef;
-
-## Deprecated.
-const interconn_default_pkt_size: count &redef;
-
-## Deprecated.
-const interconn_stat_period: interval &redef;
-
-## Deprecated.
-const interconn_stat_backoff: double &redef;
-
-## Deprecated.
-type interconn_endp_stats: record {
-	num_pkts: count;
-	num_keystrokes_two_in_row: count;
-	num_normal_interarrivals: count;
-	num_8k0_pkts: count;
-	num_8k4_pkts: count;
-	is_partial: bool;
-	num_bytes: count;
-	num_7bit_ascii: count;
-	num_lines: count;
-	num_normal_lines: count;
-};
-
-## Deprecated.
-const backdoor_stat_period: interval &redef;
-
-## Deprecated.
-const backdoor_stat_backoff: double &redef;
-
-## Deprecated.
-type backdoor_endp_stats: record {
-	is_partial: bool;
-	num_pkts: count;
-	num_8k0_pkts: count;
-	num_8k4_pkts: count;
-	num_lines: count;
-	num_normal_lines: count;
-	num_bytes: count;
-	num_7bit_ascii: count;
-};
 
 ## Description of a signature match.
 ##
@@ -3984,50 +3916,6 @@ type signature_state: record {
 	is_orig:      bool;	##< True if matching endpoint is originator.
 	payload_size: count;	##< Payload size of the first matching packet of current endpoint.
 };
-
-# Deprecated.
-#
-# .. todo:: This type is no longer used. Remove any reference of this from the
-#    core.
-type software_version: record {
-	major: int;
-	minor: int;
-	minor2: int;
-	addl: string;
-};
-
-# Deprecated.
-#
-# .. todo:: This type is no longer used. Remove any reference of this from the
-#    core.
-type software: record {
-	name: string;
-	version: software_version;
-};
-
-## Quality of passive fingerprinting matches.
-##
-## .. zeek:see:: OS_version
-type OS_version_inference: enum {
-	direct_inference,	##< TODO.
-	generic_inference,	##< TODO.
-	fuzzy_inference,	##< TODO.
-};
-
-## Passive fingerprinting match.
-##
-## .. zeek:see:: OS_version_found
-type OS_version: record {
-	genre: string;	##< Linux, Windows, AIX, ...
-	detail: string;	##< Kernel version or such.
-	dist: count;	##< How far is the host away from the sensor (TTL)?.
-	match_type: OS_version_inference;	##< Quality of the match.
-};
-
-## Defines for which subnets we should do passive fingerprinting.
-##
-## .. zeek:see:: OS_version_found
-global generate_OS_version_event: set[subnet] &redef;
 
 # Type used to report load samples via :zeek:see:`load_sample`. For now, it's a
 # set of names (event names, source file names, and perhaps ``<source file, line
@@ -4131,6 +4019,10 @@ export {
 		SignatureAlgorithm: count; ##< Signature algorithm number
 	};
 
+	type PSKIdentity: record {
+		identity: string; ##< PSK identity
+		obfuscated_ticket_age: count;
+	};
 
 ## Number of non-DTLS frames that can occur in a DTLS connection before
 ## parsing of the connection is suspended.
@@ -4151,6 +4043,8 @@ module GLOBAL;
 ##    via ``bifcl``. We should extend ``bifcl`` to understand composite types
 ##    directly and then remove this alias.
 type signature_and_hashalgorithm_vec: vector of SSL::SignatureAndHashAlgorithm;
+
+type psk_identity_vec: vector of SSL::PSKIdentity;
 
 module X509;
 export {
@@ -4266,9 +4160,83 @@ export {
 		ec_flags:               RDP::EarlyCapabilityFlags &optional;
 		dig_product_id:         string &optional;
 	};
+
+	## The TS_UD_CS_SEC data block contains security-related information used
+	## to advertise client cryptographic support.
+	type RDP::ClientSecurityData: record {
+		## Cryptographic encryption methods supported by the client and used in
+		## conjunction with Standard RDP Security.  Known flags:
+		##
+		## - 0x00000001: support for 40-bit session encryption keys
+		## - 0x00000002: support for 128-bit session encryption keys
+		## - 0x00000008: support for 56-bit session encryption keys
+		## - 0x00000010: support for FIPS compliant encryption and MAC methods
+		encryption_methods:	count;
+		## Only used in French locale and designates the encryption method.  If
+		## non-zero, then encryption_methods should be set to 0.
+		ext_encryption_methods:	count;
+	};
+
+	## Name and flags for a single channel requested by the client.
+	type RDP::ClientChannelDef: record {
+		## A unique name for the channel
+		name:           string;
+		## Channel Def raw options as count
+		options:	count;
+		## Absence of this flag indicates that this channel is
+		## a placeholder and that the server MUST NOT set it up.
+		initialized:    bool;
+		## Unused, must be ignored by the server.
+		encrypt_rdp:    bool;
+		## Unused, must be ignored by the server.
+		encrypt_sc:     bool;
+		## Unused, must be ignored by the server.
+		encrypt_cs:     bool;
+		## Channel data must be sent with high MCS priority.
+		pri_high:       bool;
+		## Channel data must be sent with medium MCS priority.
+		pri_med:        bool;
+		## Channel data must be sent with low MCS priority.
+		pri_low:        bool;
+		## Virtual channel data must be compressed if RDP data is being compressed.
+		compress_rdp:   bool;
+		## Virtual channel data must be compressed.
+		compress:       bool;
+		## Ignored by the server.
+		show_protocol:  bool;
+		## Channel must be persistent across remote control transactions.
+		persistent:     bool;
+	};
+
+	## The TS_UD_CS_CLUSTER data block is sent by the client to the server
+	## either to advertise that it can support the Server Redirection PDUs
+	## or to request a connection to a given session identifier.
+	type RDP::ClientClusterData: record {
+		## Cluster information flags.
+		flags:                          count;
+		## If the *redir_sessionid_field_valid* flag is set, this field
+		## contains a valid session identifier to which the client requests
+		## to connect.
+		redir_session_id:               count;
+		## The client can receive server session redirection packets.
+		## If this flag is set, the *svr_session_redir_version_mask*
+		## field MUST contain the server session redirection version that
+		## the client supports.
+		redir_supported:                bool;
+		## The server session redirection version that the client supports.
+		svr_session_redir_version_mask: count;
+		## Whether the *redir_session_id* field identifies a session on
+		## the server to associate with the connection.
+		redir_sessionid_field_valid:    bool;
+		## The client logged on with a smart card.
+		redir_smartcard:                bool;
+	};
+
+	## The list of channels requested by the client.
+	type RDP::ClientChannelList: vector of ClientChannelDef;
 }
 
-@load base/bif/plugins/Bro_SNMP.types.bif
+@load base/bif/plugins/Zeek_SNMP.types.bif
 
 module SNMP;
 export {
@@ -4390,7 +4358,7 @@ export {
 	};
 }
 
-@load base/bif/plugins/Bro_KRB.types.bif
+@load base/bif/plugins/Zeek_KRB.types.bif
 
 module KRB;
 export {
@@ -4483,13 +4451,13 @@ export {
 	## The data from the ERROR_MSG message. See :rfc:`4120`.
 	type KRB::Error_Msg: record {
 		## Protocol version number (5 for KRB5)
-		pvno		: count;
+		pvno		: count &optional;
 		## The message type (30 for ERROR_MSG)
-		msg_type	: count;
+		msg_type	: count &optional;
 		## Current time on the client
 		client_time	: time &optional;
 		## Current time on the server
-		server_time	: time;
+		server_time	: time &optional;
 		## The specific error code
 		error_code	: count;
 		## Realm of the ticket
@@ -4497,9 +4465,9 @@ export {
 		## Name on the ticket
 		client_name	: string &optional;
 		## Realm of the service
-		service_realm	: string;
+		service_realm	: string &optional;
 		## Name of the service
-		service_name	: string;
+		service_name	: string &optional;
 		## Additional text to explain the error
 		error_text	: string &optional;
 		## Optional pre-authentication data
@@ -4533,25 +4501,25 @@ export {
 		## Optional pre-authentication data
 		pa_data			: vector of KRB::Type_Value &optional;
 		## Options specified in the request
-		kdc_options		: KRB::KDC_Options;
+		kdc_options		: KRB::KDC_Options &optional;
 		## Name on the ticket
 		client_name		: string &optional;
 
 		## Realm of the service
-		service_realm		: string;
+		service_realm		: string &optional;
 		## Name of the service
 		service_name		: string &optional;
 		## Time the ticket is good from
 		from			: time &optional;
 		## Time the ticket is good till
-		till			: time;
+		till			: time &optional;
 		## The requested renew-till time
 		rtime			: time &optional;
 
 		## A random nonce generated by the client
-		nonce			: count;
+		nonce			: count &optional;
 		## The desired encryption algorithms, in order of preference
-		encryption_types	: vector of count;
+		encryption_types	: vector of count &optional;
 		## Any additional addresses the ticket should be valid for
 		host_addrs		: vector of KRB::Host_Address &optional;
 		## Additional tickets may be included for certain transactions
@@ -4583,22 +4551,8 @@ module GLOBAL;
 ## BPF filter the user has set via the -f command line options. Empty if none.
 const cmd_line_bpf_filter = "" &redef;
 
-## The maximum number of open files to keep cached at a given time.
-## If set to zero, this is automatically determined by inspecting
-## the current/maximum limit on open files for the process.
-const max_files_in_cache = 0 &redef;
-
-## Deprecated.
-const log_rotate_interval = 0 sec &redef;
-
-## Deprecated.
+## Base time of log rotations in 24-hour time format (``%H:%M``), e.g. "12:00".
 const log_rotate_base_time = "0:00" &redef;
-
-## Deprecated.
-const log_max_size = 0.0 &redef;
-
-## Deprecated.
-const log_encryption_key = "<undefined>" &redef;
 
 ## Write profiling info into this file in regular intervals. The easiest way to
 ## activate profiling is loading :doc:`/scripts/policy/misc/profiling.zeek`.
@@ -4670,37 +4624,21 @@ const detect_filtered_trace = F &redef;
 ## .. zeek:see:: content_gap partial_connection
 const report_gaps_for_partial = F &redef;
 
-## Flag to prevent Bro from exiting automatically when input is exhausted.
-## Normally Bro terminates when all packet sources have gone dry
-## and communication isn't enabled. If this flag is set, Bro's main loop will
+## Flag to prevent Zeek from exiting automatically when input is exhausted.
+## Normally Zeek terminates when all packet sources have gone dry
+## and communication isn't enabled. If this flag is set, Zeek's main loop will
 ## instead keep idling until :zeek:see:`terminate` is explicitly called.
 ##
 ## This is mainly for testing purposes when termination behaviour needs to be
 ## controlled for reproducing results.
 const exit_only_after_terminate = F &redef;
 
-## The CA certificate file to authorize remote Bros/Broccolis.
-##
-## .. zeek:see:: ssl_private_key ssl_passphrase
-const ssl_ca_certificate = "<undefined>" &redef;
-
-## File containing our private key and our certificate.
-##
-## .. zeek:see:: ssl_ca_certificate ssl_passphrase
-const ssl_private_key = "<undefined>" &redef;
-
-## The passphrase for our private key. Keeping this undefined
-## causes Bro to prompt for the passphrase.
-##
-## .. zeek:see:: ssl_private_key ssl_ca_certificate
-const ssl_passphrase = "<undefined>" &redef;
-
-## Default mode for Bro's user-space dynamic packet filter. If true, packets
+## Default mode for Zeek's user-space dynamic packet filter. If true, packets
 ## that aren't explicitly allowed through, are dropped from any further
 ## processing.
 ##
 ## .. note:: This is not the BPF packet filter but an additional dynamic filter
-##    that Bro optionally applies just before normal processing starts.
+##    that Zeek optionally applies just before normal processing starts.
 ##
 ## .. zeek:see:: install_dst_addr_filter install_dst_net_filter
 ##    install_src_addr_filter install_src_net_filter  uninstall_dst_addr_filter
@@ -4711,12 +4649,7 @@ const packet_filter_default = F &redef;
 const sig_max_group_size = 50 &redef;
 
 ## Description transmitted to remote communication peers for identification.
-const peer_description = "bro" &redef;
-
-## The number of IO chunks allowed to be buffered between the child
-## and parent process of remote communication before Bro starts dropping
-## connections to remote peers in an attempt to catch up.
-const chunked_io_buffer_soft_cap = 800000 &redef;
+const peer_description = "zeek" &redef;
 
 ## Reassemble the beginning of all TCP connections before doing
 ## signature matching. Enabling this provides more accurate matching at the
@@ -4730,7 +4663,7 @@ const chunked_io_buffer_soft_cap = 800000 &redef;
 const dpd_reassemble_first_packets = T &redef;
 
 ## Size of per-connection buffer used for dynamic protocol detection. For each
-## connection, Bro buffers this initial amount of payload in memory so that
+## connection, Zeek buffers this initial amount of payload in memory so that
 ## complete protocol analysis can start even after the initial packets have
 ## already passed through (i.e., when a DPD signature matches only later).
 ## However, once the buffer is full, data is deleted and lost to analyzers that
@@ -4772,20 +4705,13 @@ const time_machine_profiling = F &redef;
 ## If true, warns about unused event handlers at startup.
 const check_for_unused_event_handlers = F &redef;
 
-# If true, dumps all invoked event handlers at startup.
-# todo::Still used?
-# const dump_used_event_handlers = F &redef;
-
-## Deprecated.
-const suppress_local_output = F &redef;
-
 ## Holds the filename of the trace file given with ``-w`` (empty if none).
 ##
 ## .. zeek:see:: record_all_packets
 const trace_output_file = "";
 
-## If a trace file is given with ``-w``, dump *all* packets seen by Bro into it.
-## By default, Bro applies (very few) heuristics to reduce the volume. A side
+## If a trace file is given with ``-w``, dump *all* packets seen by Zeek into it.
+## By default, Zeek applies (very few) heuristics to reduce the volume. A side
 ## effect of setting this to true is that we can write the packets out before we
 ## actually process them, which can be helpful for debugging in case the
 ## analysis triggers a crash.
@@ -4806,7 +4732,7 @@ module JSON;
 export {
 	type TimestampFormat: enum {
 		## Timestamps will be formatted as UNIX epoch doubles.  This is
-		## the format that Bro typically writes out timestamps.
+		## the format that Zeek typically writes out timestamps.
 		TS_EPOCH,
 		## Timestamps will be formatted as unsigned integers that
 		## represent the number of milliseconds since the UNIX
@@ -4877,17 +4803,17 @@ export {
 module Reporter;
 export {
 	## Tunable for sending reporter info messages to STDERR.  The option to
-	## turn it off is presented here in case Bro is being run by some
+	## turn it off is presented here in case Zeek is being run by some
 	## external harness and shouldn't output anything to the console.
 	const info_to_stderr = T &redef;
 
 	## Tunable for sending reporter warning messages to STDERR.  The option
-	## to turn it off is presented here in case Bro is being run by some
+	## to turn it off is presented here in case Zeek is being run by some
 	## external harness and shouldn't output anything to the console.
 	const warnings_to_stderr = T &redef;
 
 	## Tunable for sending reporter error messages to STDERR.  The option to
-	## turn it off is presented here in case Bro is being run by some
+	## turn it off is presented here in case Zeek is being run by some
 	## external harness and shouldn't output anything to the console.
 	const errors_to_stderr = T &redef;
 }
@@ -4919,6 +4845,255 @@ module NCP;
 export {
 	## The maximum number of bytes to allocate when parsing NCP frames.
 	const max_frame_size = 65536 &redef;
+}
+
+module NTP;
+export {
+	## NTP standard message as defined in :rfc:`5905` for modes 1-5
+	## This record contains the standard fields used by the NTP protocol
+	## for standard syncronization operations.
+	type NTP::StandardMessage: record {
+		## This value mainly identifies the type of server (primary server,
+		## secondary server, etc.). Possible values, as in :rfc:`5905`, are:
+		##
+		##   * 0 -> unspecified or invalid
+		##   * 1 -> primary server (e.g., equipped with a GPS receiver)
+		##   * 2-15 -> secondary server (via NTP)
+		##   * 16 -> unsynchronized
+		##   * 17-255 -> reserved
+		##
+		## For stratum 0, a *kiss_code* can be given for debugging and
+		## monitoring.
+		stratum:            count;
+		## The maximum interval between successive messages.
+		poll:               interval;
+		## The precision of the system clock.
+		precision:          interval;
+		## Root delay. The total round-trip delay to the reference clock.
+		root_delay:         interval;
+		## Root Dispersion. The total dispersion to the reference clock.
+		root_disp:          interval;
+		## For stratum 0, four-character ASCII string used for debugging and
+		## monitoring. Values are defined in :rfc:`1345`.
+		kiss_code:          string &optional;
+		## Reference ID. For stratum 1, this is the ID assigned to the
+		## reference clock by IANA.
+		## For example: GOES, GPS, GAL, etc. (see :rfc:`5905`)
+		ref_id:             string &optional;
+		## Above stratum 1, when using IPv4, the IP address of the reference
+		## clock.  Note that the NTP protocol did not originally specify a
+		## large enough field to represent IPv6 addresses, so they use
+		## the first four bytes of the MD5 hash of the reference clock's
+		## IPv6 address (i.e. an IPv4 address here is not necessarily IPv4).
+		ref_addr:           addr &optional;
+		## Reference timestamp. Time when the system clock was last set or
+		## correct.
+		ref_time:           time;
+		## Origin timestamp. Time at the client when the request departed for
+		## the NTP server.
+		org_time:           time;
+		## Receive timestamp. Time at the server when the request arrived from
+		## the NTP client.
+		rec_time:           time;
+		## Transmit timestamp. Time at the server when the response departed
+		# for the NTP client.
+		xmt_time:           time;
+		## Key used to designate a secret MD5 key.
+		key_id:             count &optional;
+		## MD5 hash computed over the key followed by the NTP packet header and
+		## extension fields.
+		digest:             string &optional;
+		## Number of extension fields (which are not currently parsed).
+		num_exts:           count &default=0;
+	};
+
+	## NTP control message as defined in :rfc:`1119` for mode=6
+	## This record contains the fields used by the NTP protocol
+	## for control operations.
+	type NTP::ControlMessage: record {
+		## An integer specifying the command function. Values currently defined:
+		##
+		## * 1 read status command/response
+		## * 2 read variables command/response
+		## * 3 write variables command/response
+		## * 4 read clock variables command/response
+		## * 5 write clock variables command/response
+		## * 6 set trap address/port command/response
+		## * 7 trap response
+		##
+		## Other values are reserved.
+		op_code:            count;
+		## The response bit. Set to zero for commands, one for responses.
+		resp_bit:           bool;
+		## The error bit. Set to zero for normal response, one for error
+		## response.
+		err_bit:            bool;
+		## The more bit. Set to zero for last fragment, one for all others.
+		more_bit:           bool;
+		## The sequence number of the command or response.
+		sequence:           count;
+		## The current status of the system, peer or clock.
+		#TODO: this can be further parsed internally
+		status:             count;
+		## A 16-bit integer identifying a valid association.
+		association_id:     count;
+		## Message data for the command or response + Authenticator (optional).
+		data:               string &optional;
+		## This is an integer identifying the cryptographic
+		## key used to generate the message-authentication code.
+		key_id:             count &optional;
+		## This is a crypto-checksum computed by the encryption procedure.
+		crypto_checksum:    string &optional;
+	};
+
+	## NTP mode 7 message. Note that this is not defined in any RFC and is
+	## implementation dependent. We used the official implementation from the
+	## `NTP official project <www.ntp.org>`_.  A mode 7 packet is used
+	## exchanging data between an NTP server and a client for purposes other
+	## than time synchronization, e.g.  monitoring, statistics gathering and
+	## configuration.  For details see the documentation from the `NTP official
+	## project <www.ntp.org>`_, code v. ntp-4.2.8p13, in include/ntp_request.h.
+	type NTP::Mode7Message: record {
+		## An implementation-specific code which specifies the
+		## operation to be (which has been) performed and/or the
+		## format and semantics of the data included in the packet.
+		req_code:       count;
+		## The authenticated bit. If set, this packet is authenticated.
+		auth_bit:       bool;
+		## For a multipacket response, contains the sequence
+		## number of this packet.  0 is the first in the sequence,
+		## 127 (or less) is the last.  The More Bit must be set in
+		## all packets but the last.
+		sequence:       count;
+		## The number of the implementation this request code
+		## is defined by.  An implementation number of zero is used
+		## for requst codes/data formats which all implementations
+		## agree on.  Implementation number 255 is reserved (for
+		## extensions, in case we run out).
+		implementation: count;
+		## Must be 0 for a request.  For a response, holds an error
+		## code relating to the request.  If nonzero, the operation
+		## requested wasn't performed.
+		##
+		##   * 0 - no error
+		##   * 1 - incompatible implementation number
+		##   * 2 - unimplemented request code
+		##   * 3 - format error (wrong data items, data size, packet size etc.)
+		##   * 4 - no data available (e.g. request for details on unknown peer)
+		##   * 5 - unknown
+		##   * 6 - unknown
+		##   * 7 - authentication failure (i.e. permission denied)
+		err:            count;
+		## Rest of data
+		data:           string &optional;
+	};
+
+	## NTP message as defined in :rfc:`5905`.  Does include fields for mode 7,
+	## reserved for private use in :rfc:`5905`, but used in some implementation
+	## for commands such as "monlist".
+	type NTP::Message: record {
+		## The NTP version number (1, 2, 3, 4).
+		version:        count;
+		## The NTP mode being used. Possible values are:
+		##
+		##   * 1 - symmetric active
+		##   * 2 - symmetric passive
+		##   * 3 - client
+		##   * 4 - server
+		##   * 5 - broadcast
+		##   * 6 - NTP control message
+		##   * 7 - reserved for private use
+		mode:           count;
+		## If mode 1-5, the standard fields for syncronization operations are
+		## here.  See :rfc:`5905`
+		std_msg:        NTP::StandardMessage &optional;
+		## If mode 6, the fields for control operations are here.
+		## See :rfc:`1119`
+		control_msg:    NTP::ControlMessage &optional;
+		## If mode 7, the fields for extra operations are here.
+		## Note that this is not defined in any RFC
+		## and is implementation dependent. We used the official implementation
+		## from the `NTP official project <www.ntp.org>`_.
+		## A mode 7 packet is used exchanging data between an NTP server
+		## and a client for purposes other than time synchronization, e.g.
+		## monitoring, statistics gathering and configuration.
+		mode7_msg: NTP::Mode7Message &optional;
+	};
+}
+
+module MQTT;
+export {
+	type MQTT::ConnectMsg: record {
+		## Protocol name
+		protocol_name    : string;
+		## Protocol version
+		protocol_version : count;
+
+		## Identifies the Client to the Server.
+		client_id        : string;
+		## The maximum time interval that is permitted to elapse between the
+		## point at which the Client finishes transmitting one Control Packet
+		## and the point it starts sending the next.
+		keep_alive       : interval;
+
+		## The clean_session flag indicates if the server should or shouldn't
+		## use a clean session or use existing previous session state.
+		clean_session    : bool;
+
+		## Specifies if the Will Message is to be retained when it is published.
+		will_retain      : bool;
+		## Specifies the QoS level to be used when publishing the Will Message.
+		will_qos         : count;
+		## Topic to publish the Will message to.
+		will_topic       : string &optional;
+		## The actual Will message to publish.
+		will_msg         : string &optional;
+
+		## Username to use for authentication to the server.
+		username         : string &optional;
+		## Pass to use for authentication to the server.
+		password         : string &optional;
+	};
+
+	type MQTT::ConnectAckMsg: record {
+		## Return code from the connack message
+		return_code: count;
+
+		## The Session present flag helps the client
+		## establish whether the Client and Server
+		## have a consistent view about whether there
+		## is already stored Session state.
+		session_present: bool;
+	};
+
+	type MQTT::PublishMsg: record {
+		## Indicates if this is the first attempt at publishing the message.
+		dup     : bool;
+
+		## Indicates what level of QoS is enabled for this message.
+		qos     : count;
+
+		## Indicates if the server should retain this message so that clients
+		## subscribing to the topic in the future will receive this message
+		## automatically.
+		retain  : bool;
+
+		## Name of the topic the published message is directed into.
+		topic   : string;
+
+		## Payload of the published message.
+		payload : string;
+
+		## The actual length of the payload in the case the *payload*
+		## field's contents were truncated according to
+		## :zeek:see:`MQTT::max_payload_size`.
+		payload_len : count;
+	};
+
+	## The maximum payload size to allocate for the purpose of
+	## payload information in :zeek:see:`mqtt_publish` events (and the
+	## default MQTT logs generated from that).
+	option max_payload_size = 100;
 }
 
 module Cluster;
@@ -4979,8 +5154,8 @@ export {
 module GLOBAL;
 
 ## Seed for hashes computed internally for probabilistic data structures. Using
-## the same value here will make the hashes compatible between independent Bro
-## instances. If left unset, Bro will use a temporary local seed.
+## the same value here will make the hashes compatible between independent Zeek
+## instances. If left unset, Zeek will use a temporary local seed.
 const global_hash_seed: string = "" &redef;
 
 ## Number of bits in UIDs that are generated to identify connections and
@@ -4989,7 +5164,7 @@ const global_hash_seed: string = "" &redef;
 const bits_per_uid: count = 96 &redef;
 
 ## Whether usage of the old communication system is considered an error or
-## not.  The default Bro configuration no longer works with the non-Broker
+## not.  The default Zeek configuration no longer works with the non-Broker
 ## communication system unless you have manually taken action to initialize
 ## and set up the old comm. system.  Deprecation warnings are still emitted
 ## when setting this flag, but they will not result in a fatal error.

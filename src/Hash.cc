@@ -15,7 +15,7 @@
 // for the adversary to construct conflicts, though I do not know if
 // HMAC/MD5 is provably universal.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include "Hash.h"
 #include "Reporter.h"
@@ -26,7 +26,7 @@ void init_hash_function()
 	{
 	// Make sure we have already called init_random_seed().
 	if ( ! (hmac_key_set && siphash_key_set) )
-		reporter->InternalError("Bro's hash functions aren't fully initialized");
+		reporter->InternalError("Zeek's hash functions aren't fully initialized");
 	}
 
 HashKey::HashKey(bro_int_t i)
@@ -47,7 +47,7 @@ HashKey::HashKey(bro_uint_t u)
 	is_our_dynamic = 0;
 	}
 
-HashKey::HashKey(uint32 u)
+HashKey::HashKey(uint32_t u)
 	{
 	key_u.u32 = u;
 	key = (void*) &key_u;
@@ -56,7 +56,7 @@ HashKey::HashKey(uint32 u)
 	is_our_dynamic = 0;
 	}
 
-HashKey::HashKey(const uint32 u[], int n)
+HashKey::HashKey(const uint32_t u[], int n)
 	{
 	size = n * sizeof(u[0]);
 	key = (void*) u;
@@ -173,7 +173,7 @@ hash_t HashKey::HashBytes(const void* bytes, int size)
 
 	// Fall back to HMAC/MD5 for longer data (which is usually rare).
 	assert(sizeof(hash_t) == 8);
-	hash_t digest[2]; // 2x hash_t (uint64) = 128 bits = 32 hex chars = sizeof md5
+	hash_t digest[2]; // 2x hash_t (uint64_t) = 128 bits = 32 hex chars = sizeof md5
 	hmac_md5(size, (const unsigned char*) bytes, (unsigned char*) digest);
 	return digest[0];
 	}

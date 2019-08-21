@@ -21,7 +21,7 @@ D	[0-9]+
 H	[0-9a-fA-F]+
 HEX {H}
 STRING	\"([^\n\"]|\\\")*\"
-IDCOMPONENT [0-9a-zA-Z_][0-9a-zA-Z_-]*
+IDCOMPONENT [a-zA-Z_][0-9a-zA-Z_-]*
 ID	{IDCOMPONENT}(::{IDCOMPONENT})*
 IP6	("["({HEX}:){7}{HEX}"]")|("["0x{HEX}({HEX}|:)*"::"({HEX}|:)*"]")|("["({HEX}|:)*"::"({HEX}|:)*"]")|("["({HEX}|:)*"::"({HEX}|:)*({D}"."){3}{D}"]")
 RE	\/(\\\/)?([^/]|[^\\]\\\/)*\/i?
@@ -162,12 +162,12 @@ finger	{ rules_lval.val = Rule::FINGER; return TOK_PATTERN_TYPE; }
 	}
 
 {D}	{
-	rules_lval.val = (uint32) atoi(yytext);
+	rules_lval.val = (uint32_t) atoi(yytext);
 	return TOK_INT;
 	}
 
 0x{H}	{
-	rules_lval.val = (uint32) strtol(yytext, 0, 16);
+	rules_lval.val = (uint32_t) strtol(yytext, 0, 16);
 	return TOK_INT;
 	}
 

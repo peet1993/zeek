@@ -13,6 +13,9 @@
 #include "EventHandler.h"
 #include "TraverseTypes.h"
 
+#include <memory>
+#include <utility>
+
 typedef enum {
 	EXPR_ANY = -1,
 	EXPR_NAME, EXPR_CONST,
@@ -28,7 +31,6 @@ typedef enum {
 	EXPR_COND,
 	EXPR_REF,
 	EXPR_ASSIGN,
-	EXPR_MATCH,
 	EXPR_INDEX,
 	EXPR_FIELD, EXPR_HAS_FIELD,
 	EXPR_RECORD_CONSTRUCTOR,
@@ -39,6 +41,7 @@ typedef enum {
 	EXPR_IN,
 	EXPR_LIST,
 	EXPR_CALL,
+	EXPR_LAMBDA,
 	EXPR_EVENT,
 	EXPR_SCHEDULE,
 	EXPR_ARITH_COERCE,
@@ -49,7 +52,8 @@ typedef enum {
 	EXPR_FLATTEN,
 	EXPR_CAST,
 	EXPR_IS,
-#define NUM_EXPRS (int(EXPR_IS) + 1)
+	EXPR_INDEX_SLICE_ASSIGN,
+#define NUM_EXPRS (int(EXPR_INDEX_SLICE_ASSIGN) + 1)
 } BroExprTag;
 
 extern const char* expr_name(BroExprTag t);
@@ -58,9 +62,12 @@ class Stmt;
 class Frame;
 class ListExpr;
 class NameExpr;
+class IndexExpr;
 class AssignExpr;
 class CallExpr;
 class EventExpr;
+
+struct function_ingredients;
 
 
 class Expr : public BroObj {
@@ -84,7 +91,7 @@ public:
 			const;
 
 	// Assign to the given value, if appropriate.
-	virtual void Assign(Frame* f, Val* v, Opcode op = OP_ASSIGN);
+	virtual void Assign(Frame* f, Val* v);
 
 	// Returns the type corresponding to this expression interpreted
 	// as an initialization.  The type should be Unref()'d when done
@@ -187,10 +194,19 @@ public:
 		return (AssignExpr*) this;
 		}
 
-	void Describe(ODesc* d) const override;
+	const IndexExpr* AsIndexExpr() const
+		{
+		CHECK_TAG(tag, EXPR_INDEX, "ExprVal::AsIndexExpr", expr_name)
+		return (const IndexExpr*) this;
+		}
 
-	bool Serialize(SerialInfo* info) const;
-	static Expr* Unserialize(UnserialInfo* info, BroExprTag want = EXPR_ANY);
+	IndexExpr* AsIndexExpr()
+		{
+		CHECK_TAG(tag, EXPR_INDEX, "ExprVal::AsIndexExpr", expr_name)
+		return (IndexExpr*) this;
+		}
+
+	void Describe(ODesc* d) const override;
 
 	virtual TraversalCode Traverse(TraversalCallback* cb) const = 0;
 
@@ -214,8 +230,6 @@ protected:
 
 	void RuntimeErrorWithCallStack(const std::string& msg) const;
 
-	DECLARE_ABSTRACT_SERIAL(Expr);
-
 	BroExprTag tag;
 	BroType* type;
 
@@ -230,7 +244,7 @@ public:
 	ID* Id() const		{ return id; }
 
 	Val* Eval(Frame* f) const override;
-	void Assign(Frame* f, Val* v, Opcode op = OP_ASSIGN) override;
+	void Assign(Frame* f, Val* v) override;
 	Expr* MakeLvalue() override;
 	int IsPure() const override;
 
@@ -241,8 +255,6 @@ protected:
 	NameExpr()	{ id = 0; }
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(NameExpr);
 
 	ID* id;
 	bool in_const_init;
@@ -264,8 +276,6 @@ protected:
 	ConstExpr()	{ val = 0; }
 
 	void ExprDescribe(ODesc* d) const override;
-	DECLARE_SERIAL(ConstExpr);
-
 	Val* val;
 };
 
@@ -293,8 +303,6 @@ protected:
 
 	// Returns the expression folded using the given constant.
 	virtual Val* Fold(Val* v) const;
-
-	DECLARE_SERIAL(UnaryExpr);
 
 	Expr* op;
 };
@@ -357,8 +365,6 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(BinaryExpr);
-
 	Expr* op1;
 	Expr* op2;
 };
@@ -373,8 +379,6 @@ protected:
 	CloneExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(CloneExpr);
 };
 
 class IncrExpr : public UnaryExpr {
@@ -388,8 +392,6 @@ public:
 protected:
 	friend class Expr;
 	IncrExpr()	{ }
-
-	DECLARE_SERIAL(IncrExpr);
 };
 
 class ComplementExpr : public UnaryExpr {
@@ -401,8 +403,6 @@ protected:
 	ComplementExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(ComplementExpr);
 };
 
 class NotExpr : public UnaryExpr {
@@ -414,8 +414,6 @@ protected:
 	NotExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(NotExpr);
 };
 
 class PosExpr : public UnaryExpr {
@@ -427,8 +425,6 @@ protected:
 	PosExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(PosExpr);
 };
 
 class NegExpr : public UnaryExpr {
@@ -440,8 +436,6 @@ protected:
 	NegExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(NegExpr);
 };
 
 class SizeExpr : public UnaryExpr {
@@ -454,7 +448,6 @@ protected:
 	SizeExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-	DECLARE_SERIAL(SizeExpr);
 };
 
 class AddExpr : public BinaryExpr {
@@ -465,9 +458,6 @@ public:
 protected:
 	friend class Expr;
 	AddExpr()	{ }
-
-	DECLARE_SERIAL(AddExpr);
-
 };
 
 class AddToExpr : public BinaryExpr {
@@ -478,8 +468,6 @@ public:
 protected:
 	friend class Expr;
 	AddToExpr()	{ }
-
-	DECLARE_SERIAL(AddToExpr);
 };
 
 class RemoveFromExpr : public BinaryExpr {
@@ -490,8 +478,6 @@ public:
 protected:
 	friend class Expr;
 	RemoveFromExpr()	{ }
-
-	DECLARE_SERIAL(RemoveFromExpr);
 };
 
 class SubExpr : public BinaryExpr {
@@ -501,9 +487,6 @@ public:
 protected:
 	friend class Expr;
 	SubExpr()	{ }
-
-	DECLARE_SERIAL(SubExpr);
-
 };
 
 class TimesExpr : public BinaryExpr {
@@ -514,9 +497,6 @@ public:
 protected:
 	friend class Expr;
 	TimesExpr()	{ }
-
-	DECLARE_SERIAL(TimesExpr);
-
 };
 
 class DivideExpr : public BinaryExpr {
@@ -528,9 +508,6 @@ protected:
 	DivideExpr()	{ }
 
 	Val* AddrFold(Val* v1, Val* v2) const override;
-
-	DECLARE_SERIAL(DivideExpr);
-
 };
 
 class ModExpr : public BinaryExpr {
@@ -540,8 +517,6 @@ public:
 protected:
 	friend class Expr;
 	ModExpr()	{ }
-
-	DECLARE_SERIAL(ModExpr);
 };
 
 class BoolExpr : public BinaryExpr {
@@ -554,8 +529,6 @@ public:
 protected:
 	friend class Expr;
 	BoolExpr()	{ }
-
-	DECLARE_SERIAL(BoolExpr);
 };
 
 class BitExpr : public BinaryExpr {
@@ -565,8 +538,6 @@ public:
 protected:
 	friend class Expr;
 	BitExpr()	{ }
-
-	DECLARE_SERIAL(BitExpr);
 };
 
 class EqExpr : public BinaryExpr {
@@ -579,8 +550,6 @@ protected:
 	EqExpr()	{ }
 
 	Val* Fold(Val* v1, Val* v2) const override;
-
-	DECLARE_SERIAL(EqExpr);
 };
 
 class RelExpr : public BinaryExpr {
@@ -591,8 +560,6 @@ public:
 protected:
 	friend class Expr;
 	RelExpr()	{ }
-
-	DECLARE_SERIAL(RelExpr);
 };
 
 class CondExpr : public Expr {
@@ -615,8 +582,6 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(CondExpr);
-
 	Expr* op1;
 	Expr* op2;
 	Expr* op3;
@@ -626,14 +591,12 @@ class RefExpr : public UnaryExpr {
 public:
 	explicit RefExpr(Expr* op);
 
-	void Assign(Frame* f, Val* v, Opcode op = OP_ASSIGN) override;
+	void Assign(Frame* f, Val* v) override;
 	Expr* MakeLvalue() override;
 
 protected:
 	friend class Expr;
 	RefExpr()	{ }
-
-	DECLARE_SERIAL(RefExpr);
 };
 
 class AssignExpr : public BinaryExpr {
@@ -657,10 +620,18 @@ protected:
 	bool TypeCheck(attr_list* attrs = 0);
 	bool TypeCheckArithmetics(TypeTag bt1, TypeTag bt2);
 
-	DECLARE_SERIAL(AssignExpr);
-
 	int is_init;
 	Val* val;	// optional
+};
+
+class IndexSliceAssignExpr : public AssignExpr {
+public:
+	IndexSliceAssignExpr(Expr* op1, Expr* op2, int is_init);
+	Val* Eval(Frame* f) const override;
+
+protected:
+	friend class Expr;
+	IndexSliceAssignExpr() {}
 };
 
 class IndexExpr : public BinaryExpr {
@@ -673,7 +644,7 @@ public:
 	void Add(Frame* f) override;
 	void Delete(Frame* f) override;
 
-	void Assign(Frame* f, Val* v, Opcode op = OP_ASSIGN) override;
+	void Assign(Frame* f, Val* v) override;
 	Expr* MakeLvalue() override;
 
 	// Need to override Eval since it can take a vector arg but does
@@ -681,6 +652,8 @@ public:
 	Val* Eval(Frame* f) const override;
 
 	TraversalCode Traverse(TraversalCallback* cb) const override;
+
+	bool IsSlice() const { return is_slice; }
 
 protected:
 	friend class Expr;
@@ -690,7 +663,7 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(IndexExpr);
+	bool is_slice;
 };
 
 class FieldExpr : public UnaryExpr {
@@ -703,7 +676,7 @@ public:
 
 	int CanDel() const override;
 
-	void Assign(Frame* f, Val* v, Opcode op = OP_ASSIGN) override;
+	void Assign(Frame* f, Val* v) override;
 	void Delete(Frame* f) override;
 
 	Expr* MakeLvalue() override;
@@ -715,8 +688,6 @@ protected:
 	Val* Fold(Val* v) const override;
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(FieldExpr);
 
 	const char* field_name;
 	const TypeDecl* td;
@@ -740,8 +711,6 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(HasFieldExpr);
-
 	const char* field_name;
 	int field;
 };
@@ -759,8 +728,6 @@ protected:
 	Val* Fold(Val* v) const override;
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(RecordConstructorExpr);
 };
 
 class TableConstructorExpr : public UnaryExpr {
@@ -780,8 +747,6 @@ protected:
 	Val* InitVal(const BroType* t, Val* aggr) const override;
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(TableConstructorExpr);
 
 	Attributes* attrs;
 };
@@ -804,8 +769,6 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(SetConstructorExpr);
-
 	Attributes* attrs;
 };
 
@@ -822,8 +785,6 @@ protected:
 	Val* InitVal(const BroType* t, Val* aggr) const override;
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(VectorConstructorExpr);
 };
 
 class FieldAssignExpr : public UnaryExpr {
@@ -841,8 +802,6 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(FieldAssignExpr);
-
 	string field_name;
 };
 
@@ -856,8 +815,6 @@ protected:
 
 	Val* FoldSingleVal(Val* v, InternalTypeTag t) const;
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(ArithCoerceExpr);
 };
 
 class RecordCoerceExpr : public UnaryExpr {
@@ -871,8 +828,6 @@ protected:
 
 	Val* InitVal(const BroType* t, Val* aggr) const override;
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(RecordCoerceExpr);
 
 	// For each super-record slot, gives subrecord slot with which to
 	// fill it.
@@ -890,8 +845,6 @@ protected:
 	TableCoerceExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(TableCoerceExpr);
 };
 
 class VectorCoerceExpr : public UnaryExpr {
@@ -904,8 +857,6 @@ protected:
 	VectorCoerceExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(VectorCoerceExpr);
 };
 
 // An internal operator for flattening array indices that are records
@@ -919,8 +870,6 @@ protected:
 	FlattenExpr()	{ }
 
 	Val* Fold(Val* v) const override;
-
-	DECLARE_SERIAL(FlattenExpr);
 
 	int num_fields;
 };
@@ -961,8 +910,6 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(ScheduleExpr);
-
 	Expr* when;
 	EventExpr* event;
 };
@@ -976,8 +923,6 @@ protected:
 	InExpr()	{ }
 
 	Val* Fold(Val* v1, Val* v2) const override;
-
-	DECLARE_SERIAL(InExpr);
 
 };
 
@@ -1001,10 +946,32 @@ protected:
 
 	void ExprDescribe(ODesc* d) const override;
 
-	DECLARE_SERIAL(CallExpr);
-
 	Expr* func;
 	ListExpr* args;
+};
+
+
+/**
+ * Class that represents an anonymous function expression in Zeek.
+ * On evaluation, captures the frame that it is evaluated in. This becomes
+ * the closure for the instance of the function that it creates.
+ */
+class LambdaExpr : public Expr {
+public:
+	LambdaExpr(std::unique_ptr<function_ingredients> ingredients,
+		   id_list outer_ids);
+
+	Val* Eval(Frame* f) const override;
+	TraversalCode Traverse(TraversalCallback* cb) const override;
+
+protected:
+	void ExprDescribe(ODesc* d) const override;
+
+private:
+	std::unique_ptr<function_ingredients> ingredients;
+
+	id_list outer_ids;
+	std::string my_name;
 };
 
 class EventExpr : public Expr {
@@ -1025,8 +992,6 @@ protected:
 	EventExpr()	{ args = 0; }
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(EventExpr);
 
 	string name;
 	EventHandlerPtr handler;
@@ -1055,7 +1020,7 @@ public:
 	BroType* InitType() const override;
 	Val* InitVal(const BroType* t, Val* aggr) const override;
 	Expr* MakeLvalue() override;
-	void Assign(Frame* f, Val* v, Opcode op = OP_ASSIGN) override;
+	void Assign(Frame* f, Val* v) override;
 
 	TraversalCode Traverse(TraversalCallback* cb) const override;
 
@@ -1063,8 +1028,6 @@ protected:
 	Val* AddSetInit(const BroType* t, Val* aggr) const;
 
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(ListExpr);
 
 	expr_list exprs;
 };
@@ -1079,8 +1042,6 @@ public:
 protected:
 	friend class Expr;
 	RecordAssignExpr()	{ }
-
-	DECLARE_SERIAL(RecordAssignExpr);
 };
 
 class CastExpr : public UnaryExpr {
@@ -1093,8 +1054,6 @@ protected:
 
 	Val* Eval(Frame* f) const override;
 	void ExprDescribe(ODesc* d) const override;
-
-	DECLARE_SERIAL(CastExpr);
 };
 
 class IsExpr : public UnaryExpr {
@@ -1108,7 +1067,6 @@ protected:
 
 	Val* Fold(Val* v) const override;
 	void ExprDescribe(ODesc* d) const override;
-	DECLARE_SERIAL(IsExpr);
 
 private:
 	BroType* t;

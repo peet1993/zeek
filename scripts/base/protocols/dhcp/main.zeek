@@ -79,6 +79,9 @@ export {
 		## Duration of the DHCP "session" representing the 
 		## time from the first message to the last.
 		duration:       interval    &log &default=0secs;
+
+		## The CHADDR field sent by the client.
+		client_chaddr:  string      &optional;
 	};
 
 	## The maximum amount of time that a transation ID will be watched
@@ -138,11 +141,17 @@ function join_data_expiration(t: table[count] of Info, idx: count): interval
 	# If a message hasn't been seen in the past 5 seconds or the
 	# total time watching has been more than the maximum time
 	# allowed by the configuration then log this data and expire it.
-	# Also, if Bro is shutting down.
+	# Also, if Zeek is shutting down.
 	if ( (now - info$last_message_ts) > 5sec ||
 	     (now - info$ts) > max_txid_watch_time ||
-	     bro_is_terminating() )
+	     zeek_is_terminating() )
 		{
+		# If client didn't send client-identifier option and we didn't see
+		# a response from a server to use its chaddr field, then fill in mac
+		# from the client's chaddr field.
+		if ( ! info?$mac && info?$client_chaddr )
+			info$mac = info$client_chaddr;
+
 		Log::write(LOG, info);
 
 		# Go ahead and expire the data now that the log
@@ -219,6 +228,8 @@ event DHCP::aggregate_msgs(ts: time, id: conn_id, uid: string, is_orig: bool, ms
 		if ( options?$client_id &&
 		     options$client_id$hwtype == 1 ) # ETHERNET
 			log_info$mac = options$client_id$hwaddr;
+		else
+			log_info$client_chaddr = msg$chaddr;
 
 		if ( options?$addr_request )
 			log_info$requested_addr = options$addr_request;

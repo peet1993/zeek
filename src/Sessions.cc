@@ -1,7 +1,7 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <arpa/inet.h>
 
@@ -14,17 +14,12 @@
 #include "NetVar.h"
 #include "Sessions.h"
 #include "Reporter.h"
-#include "OSFinger.h"
 
 #include "analyzer/protocol/icmp/ICMP.h"
 #include "analyzer/protocol/udp/UDP.h"
 
 #include "analyzer/protocol/stepping-stone/SteppingStone.h"
 #include "analyzer/protocol/stepping-stone/events.bif.h"
-#include "analyzer/protocol/backdoor/BackDoor.h"
-#include "analyzer/protocol/backdoor/events.bif.h"
-#include "analyzer/protocol/interconn/InterConn.h"
-#include "analyzer/protocol/interconn/events.bif.h"
 #include "analyzer/protocol/arp/ARP.h"
 #include "analyzer/protocol/arp/events.bif.h"
 #include "Discard.h"
@@ -120,24 +115,8 @@ NetSessions::NetSessions()
 
 	packet_filter = 0;
 
-	build_backdoor_analyzer =
-		backdoor_stats || rlogin_signature_found ||
-		telnet_signature_found || ssh_signature_found ||
-		root_backdoor_signature_found || ftp_signature_found ||
-		napster_signature_found || kazaa_signature_found ||
-		http_signature_found || http_proxy_signature_found;
-
 	dump_this_packet = 0;
 	num_packets_processed = 0;
-
-	if ( OS_version_found )
-		{
-		SYN_OS_Fingerprinter = new OSFingerprint(SYN_FINGERPRINT_MODE);
-		if ( SYN_OS_Fingerprinter->Error() )
-			exit(1);
-		}
-	else
-		SYN_OS_Fingerprinter = 0;
 
 	if ( pkt_profile_mode && pkt_profile_freq > 0 && pkt_profile_file )
 		pkt_profiler = new PacketProfiler(pkt_profile_mode,
@@ -155,7 +134,6 @@ NetSessions::~NetSessions()
 	{
 	delete ch;
 	delete packet_filter;
-	delete SYN_OS_Fingerprinter;
 	delete pkt_profiler;
 	Unref(arp_analyzer);
 	delete discarder;
@@ -189,7 +167,7 @@ void NetSessions::NextPacket(double t, const Packet* pkt)
 		return;
 		}
 
-	uint32 caplen = pkt->cap_len - pkt->hdr_size;
+	uint32_t caplen = pkt->cap_len - pkt->hdr_size;
 
 	if ( pkt->l3_proto == L3_IPV4 )
 		{
@@ -286,7 +264,7 @@ int NetSessions::CheckConnectionTag(Connection* conn)
 	return 1;
 	}
 
-static unsigned int gre_header_len(uint16 flags)
+static unsigned int gre_header_len(uint16_t flags)
 	{
 	unsigned int len = 4;  // Always has 2 byte flags and 2 byte protocol type.
 
@@ -316,10 +294,10 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 	{
     DBG_LOG(DBG_LLPOC, "[LAYER 4] Next packet with ts=%f contains protocol %d", pkt->time, (int) ip_hdr->NextProto());
 
-    uint32 caplen = pkt->cap_len - pkt->hdr_size;
+	uint32_t caplen = pkt->cap_len - pkt->hdr_size;
 	const struct ip* ip4 = ip_hdr->IP4_Hdr();
 
-	uint32 len = ip_hdr->TotalLen();
+	uint32_t len = ip_hdr->TotalLen();
 	if ( len == 0 )
 		{
 		// TCP segmentation offloading can zero out the ip_len field.
@@ -337,7 +315,7 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 
 	// For both of these it is safe to pass ip_hdr because the presence
 	// is guaranteed for the functions that pass data to us.
-	uint16 ip_hdr_len = ip_hdr->HdrLen();
+	uint16_t ip_hdr_len = ip_hdr->HdrLen();
 	if ( ip_hdr_len > len )
 		{
 		Weird("invalid_IP_header_size", ip_hdr, encapsulation);
@@ -515,8 +493,8 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 			return;
 			}
 
-		uint16 flags_ver = ntohs(*((uint16*)(data + 0)));
-		uint16 proto_typ = ntohs(*((uint16*)(data + 2)));
+		uint16_t flags_ver = ntohs(*((uint16_t*)(data + 0)));
+		uint16_t proto_typ = ntohs(*((uint16_t*)(data + 2)));
 		int gre_version = flags_ver & 0x0007;
 
 		// If a carried packet has ethernet, this will help skip it.
@@ -539,7 +517,7 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 				if ( len > gre_len + 14 )
 					{
 					eth_len = 14;
-					proto_typ = ntohs(*((uint16*)(data + gre_len + eth_len - 2)));
+					proto_typ = ntohs(*((uint16_t*)(data + gre_len + eth_len - 2)));
 					}
 				else
 					{
@@ -555,7 +533,7 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 					{
 					erspan_len = 8;
 					eth_len = 14;
-					proto_typ = ntohs(*((uint16*)(data + gre_len + erspan_len + eth_len - 2)));
+					proto_typ = ntohs(*((uint16_t*)(data + gre_len + erspan_len + eth_len - 2)));
 					}
 				else
 					{
@@ -586,7 +564,7 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 							}
 						}
 
-					proto_typ = ntohs(*((uint16*)(data + gre_len + erspan_len + eth_len - 2)));
+					proto_typ = ntohs(*((uint16_t*)(data + gre_len + erspan_len + eth_len - 2)));
 					}
 				else
 					{
@@ -642,7 +620,7 @@ void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr
 
 		if ( gre_version == 1 )
 			{
-			uint16 ppp_proto = ntohs(*((uint16*)(data + gre_len + 2)));
+			uint16_t ppp_proto = ntohs(*((uint16_t*)(data + gre_len + 2)));
 
 			if ( ppp_proto != 0x0021 && ppp_proto != 0x0057 )
 				{
@@ -833,7 +811,7 @@ void NetSessions::DoNextInnerPacket(double t, const Packet* pkt,
 		const IP_Hdr* inner, const EncapsulationStack* prev,
 		const EncapsulatingConn& ec)
 	{
-	uint32 caplen, len;
+	uint32_t caplen, len;
 	caplen = len = inner->TotalLen();
 
 	pkt_timeval ts;
@@ -907,16 +885,16 @@ int NetSessions::ParseIPPacket(int caplen, const u_char* const pkt, int proto,
 		return -1;
 		}
 
-	if ( (uint32)caplen != inner->TotalLen() )
-		return (uint32)caplen < inner->TotalLen() ? -1 : 1;
+	if ( (uint32_t)caplen != inner->TotalLen() )
+		return (uint32_t)caplen < inner->TotalLen() ? -1 : 1;
 
 	return 0;
 	}
 
-bool NetSessions::CheckHeaderTrunc(int proto, uint32 len, uint32 caplen,
+bool NetSessions::CheckHeaderTrunc(int proto, uint32_t len, uint32_t caplen,
                                    const Packet* p, const EncapsulationStack* encap)
 	{
-	uint32 min_hdr_len = 0;
+	uint32_t min_hdr_len = 0;
 	switch ( proto ) {
 	case IPPROTO_TCP:
 		min_hdr_len = sizeof(struct tcphdr);
@@ -962,7 +940,7 @@ bool NetSessions::CheckHeaderTrunc(int proto, uint32 len, uint32 caplen,
 FragReassembler* NetSessions::NextFragment(double t, const IP_Hdr* ip,
 					const u_char* pkt)
 	{
-	uint32 frag_id = ip->ID();
+	uint32_t frag_id = ip->ID();
 
 	ListVal* key = new ListVal(TYPE_ANY);
 	key->Append(new AddrVal(ip->SrcAddr()));
@@ -987,24 +965,6 @@ FragReassembler* NetSessions::NextFragment(double t, const IP_Hdr* ip,
 
 	f->AddFragment(t, ip, pkt);
 	return f;
-	}
-
-int NetSessions::Get_OS_From_SYN(struct os_type* retval,
-		  uint16 tot, uint8 DF_flag, uint8 TTL, uint16 WSS,
-		  uint8 ocnt, uint8* op, uint16 MSS, uint8 win_scale,
-		  uint32 tstamp, /* uint8 TOS, */ uint32 quirks,
-		  uint8 ECN) const
-	{
-	return SYN_OS_Fingerprinter ?
-		SYN_OS_Fingerprinter->FindMatch(retval, tot, DF_flag, TTL,
-				WSS, ocnt, op, MSS, win_scale, tstamp,
-				quirks, ECN) : 0;
-	}
-
-bool NetSessions::CompareWithPreviousOSMatch(const IPAddr& addr, int id) const
-	{
-	return SYN_OS_Fingerprinter ?
-		SYN_OS_Fingerprinter->CacheMatch(addr, id) : 0;
 	}
 
 Connection* NetSessions::FindConnection(Val* v)
@@ -1093,9 +1053,9 @@ void NetSessions::Remove(Connection* c)
 		{
 		c->CancelTimers();
 
-		analyzer::tcp::TCP_Analyzer* ta = (analyzer::tcp::TCP_Analyzer*) c->GetRootAnalyzer();
-		if ( ta && c->ConnTransport() == TRANSPORT_TCP )
+		if ( c->ConnTransport() == TRANSPORT_TCP )
 			{
+			auto ta = static_cast<analyzer::tcp::TCP_Analyzer*>(c->GetRootAnalyzer());
 			assert(ta->IsAnalyzer("TCP"));
 			analyzer::tcp::TCP_Endpoint* to = ta->Orig();
 			analyzer::tcp::TCP_Endpoint* tr = ta->Resp();
@@ -1249,7 +1209,7 @@ void NetSessions::GetStats(SessionStats& s) const
 	}
 
 Connection* NetSessions::NewConn(HashKey* k, double t, const ConnID* id,
-					const u_char* data, int proto, uint32 flow_label,
+					const u_char* data, int proto, uint32_t flow_label,
 					const Packet* pkt, const EncapsulationStack* encapsulation)
 	{
 	// FIXME: This should be cleaned up a bit, it's too protocol-specific.
@@ -1324,7 +1284,7 @@ Connection* NetSessions::NewConn(HashKey* k, double t, const ConnID* id,
 	return conn;
 	}
 
-bool NetSessions::IsLikelyServerPort(uint32 port, TransportProto proto) const
+bool NetSessions::IsLikelyServerPort(uint32_t port, TransportProto proto) const
 	{
 	// We keep a cached in-core version of the table to speed up the lookup.
 	static set<bro_uint_t> port_cache;
@@ -1351,9 +1311,9 @@ bool NetSessions::IsLikelyServerPort(uint32 port, TransportProto proto) const
 	return port_cache.find(port) != port_cache.end();
 	}
 
-bool NetSessions::WantConnection(uint16 src_port, uint16 dst_port,
+bool NetSessions::WantConnection(uint16_t src_port, uint16_t dst_port,
 					TransportProto transport_proto,
-					uint8 tcp_flags, bool& flip_roles)
+					uint8_t tcp_flags, bool& flip_roles)
 	{
 	flip_roles = false;
 
@@ -1444,7 +1404,7 @@ void NetSessions::DumpPacket(const Packet *pkt, int len)
 
 	if ( len != 0 )
 		{
-		if ( (uint32)len > pkt->cap_len )
+		if ( (uint32_t)len > pkt->cap_len )
 			reporter->Warning("bad modified caplen");
 		else
 			const_cast<Packet *>(pkt)->cap_len = len;

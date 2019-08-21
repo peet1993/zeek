@@ -1,7 +1,7 @@
 # @TEST-PORT: BROKER_PORT
 
-# @TEST-EXEC: btest-bg-run recv "bro -b ../recv.zeek >recv.out"
-# @TEST-EXEC: btest-bg-run send "bro -b ../send.zeek >send.out"
+# @TEST-EXEC: btest-bg-run recv "zeek -b ../recv.zeek >recv.out"
+# @TEST-EXEC: btest-bg-run send "zeek -b ../send.zeek >send.out"
 
 # @TEST-EXEC: btest-bg-wait 45
 # @TEST-EXEC: btest-diff recv/recv.out
@@ -44,7 +44,7 @@ event Broker::peer_lost(endpoint: Broker::EndpointInfo, msg: string)
 
 event zeek_init()
 	{
-	Broker::subscribe("bro/");
+	Broker::subscribe("zeek/");
 	Broker::listen("127.0.0.1", to_port(getenv("BROKER_PORT")));
 	}
 

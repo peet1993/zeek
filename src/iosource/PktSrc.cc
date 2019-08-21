@@ -3,7 +3,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include "util.h"
 #include "PktSrc.h"
@@ -59,7 +59,7 @@ int PktSrc::LinkType() const
 	return IsOpen() ? props.link_type : -1;
 	}
 
-uint32 PktSrc::Netmask() const
+uint32_t PktSrc::Netmask() const
 	{
 	return IsOpen() ? props.netmask : NETMASK_UNKNOWN;
 	}

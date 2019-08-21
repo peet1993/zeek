@@ -10,6 +10,8 @@
 
 #include "file_analysis/Manager.h"
 
+#include <broker/error.hh>
+
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/asn1.h>
@@ -18,22 +20,20 @@
 
 using namespace file_analysis;
 
-IMPLEMENT_SERIAL(X509Val, SER_X509_VAL);
-
 file_analysis::X509::X509(RecordVal* args, file_analysis::File* file)
 	: file_analysis::X509Common::X509Common(file_mgr->GetComponentTag("X509"), args, file)
 	{
 	cert_data.clear();
 	}
 
-bool file_analysis::X509::DeliverStream(const u_char* data, uint64 len)
+bool file_analysis::X509::DeliverStream(const u_char* data, uint64_t len)
 	{
 	// just add it to the data we have so far, since we cannot do anything else anyways...
 	cert_data.append(reinterpret_cast<const char*>(data), len);
 	return true;
 	}
 
-bool file_analysis::X509::Undelivered(uint64 offset, uint64 len)
+bool file_analysis::X509::Undelivered(uint64_t offset, uint64_t len)
 	{
 	return false;
 	}
@@ -96,7 +96,7 @@ RecordVal* file_analysis::X509::ParseCertificate(X509Val* cert_val, File* f)
 	RecordVal* pX509Cert = new RecordVal(BifType::Record::X509::Certificate);
 	BIO *bio = BIO_new(BIO_s_mem());
 
-	pX509Cert->Assign(0, val_mgr->GetCount((uint64) X509_get_version(ssl_cert) + 1));
+	pX509Cert->Assign(0, val_mgr->GetCount((uint64_t) X509_get_version(ssl_cert) + 1));
 	i2a_ASN1_INTEGER(bio, X509_get_serialNumber(ssl_cert));
 	int len = BIO_read(bio, buf, sizeof(buf));
 	pX509Cert->Assign(1, new StringVal(len, buf));
@@ -330,7 +330,7 @@ void file_analysis::X509::ParseSAN(X509_EXTENSION* ext)
 				if ( ips == 0 )
 					ips = new VectorVal(internal_type("addr_vec")->AsVectorType());
 
-				uint32* addr = (uint32*) gen->d.ip->data;
+				uint32_t* addr = (uint32_t*) gen->d.ip->data;
 
 				if( gen->d.ip->length == 4 )
 					ips->Assign(ips->Size(), new AddrVal(*addr));
@@ -477,44 +477,43 @@ X509Val::~X509Val()
 		X509_free(certificate);
 	}
 
+Val* X509Val::DoClone(CloneState* state)
+	{
+	auto copy = new X509Val();
+	if ( certificate )
+		copy->certificate = X509_dup(certificate);
+
+	return state->NewClone(this, copy);
+	}
+
 ::X509* X509Val::GetCertificate() const
 	{
 	return certificate;
 	}
 
-bool X509Val::DoSerialize(SerialInfo* info) const
+IMPLEMENT_OPAQUE_VALUE(X509Val)
+
+broker::expected<broker::data> X509Val::DoSerialize() const
 	{
-	DO_SERIALIZE(SER_X509_VAL, OpaqueVal);
-
 	unsigned char *buf = NULL;
-
 	int length = i2d_X509(certificate, &buf);
 
 	if ( length < 0 )
-		return false;
+		return broker::ec::invalid_data;
 
-	bool res = SERIALIZE_STR(reinterpret_cast<const char*>(buf), length);
-
+	auto d = std::string(reinterpret_cast<const char*>(buf), length);
 	OPENSSL_free(buf);
-	return res;
+
+	return {std::move(d)};
 	}
 
-bool X509Val::DoUnserialize(UnserialInfo* info)
+bool X509Val::DoUnserialize(const broker::data& data)
 	{
-	DO_UNSERIALIZE(OpaqueVal)
-
-	int length;
-	unsigned char *certbuf, *opensslbuf;
-
-	if ( ! UNSERIALIZE_STR(reinterpret_cast<char **>(&certbuf), &length) )
+	auto s = caf::get_if<std::string>(&data);
+	if ( ! s )
 		return false;
 
-	opensslbuf = certbuf; // OpenSSL likes to shift pointers around. really.
-	certificate = d2i_X509(NULL, const_cast<const unsigned char**>(&opensslbuf), length);
-	delete[] certbuf;
-
-	if ( !certificate )
-		return false;
-
-	return true;
+	auto opensslbuf = reinterpret_cast<const unsigned char*>(s->data());
+	certificate = d2i_X509(NULL, &opensslbuf, s->size());
+	return (certificate != nullptr);
 	}

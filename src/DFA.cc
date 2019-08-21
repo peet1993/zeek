@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include "EquivClass.h"
 #include "DFA.h"
@@ -17,7 +17,6 @@ DFA_State::DFA_State(int arg_state_num, const EquivClass* ec,
 	nfa_states = arg_nfa_states;
 	accept = arg_accept;
 	mark = 0;
-	centry = 0;
 
 	SymPartition(ec);
 
@@ -108,11 +107,11 @@ DFA_State* DFA_State::ComputeXtion(int sym, DFA_Machine* machine)
 
 void DFA_State::AppendIfNew(int sym, int_list* sym_list)
 	{
-	for ( int i = 0; i < sym_list->length(); ++i )
-		if ( (*sym_list)[i] == sym )
+	for ( auto value : *sym_list )
+		if ( value == sym )
 			return;
 
-	sym_list->append(sym);
+	sym_list->push_back(sym);
 	}
 
 NFA_state_list* DFA_State::SymFollowSet(int ec_sym, const EquivClass* ec)
@@ -132,8 +131,8 @@ NFA_state_list* DFA_State::SymFollowSet(int ec_sym, const EquivClass* ec)
 
 			if ( ccl->IsNegated() )
 				{
-				int j;
-				for ( j = 0; j < syms->length(); ++j )
+				size_t j;
+				for ( j = 0; j < syms->size(); ++j )
 					{
 					// Loop through (sorted) negated
 					// character class, which has
@@ -143,25 +142,25 @@ NFA_state_list* DFA_State::SymFollowSet(int ec_sym, const EquivClass* ec)
 						break;
 					}
 
-				if ( j >= syms->length() || (*syms)[j] > ec_sym )
+				if ( j >= syms->size() || (*syms)[j] > ec_sym )
 					// Didn't find ec_sym in ccl.
 					n->AddXtionsTo(ns);
 
 				continue;
 				}
 
-			for ( int j = 0; j < syms->length(); ++j )
+			for ( auto sym : *syms )
 				{
-				if ( (*syms)[j] > ec_sym )
+				if ( sym > ec_sym )
 					break;
 
-				if ( (*syms)[j] == ec_sym )
+				if ( sym == ec_sym )
 					{
 					n->AddXtionsTo(ns);
 					break;
 					}
 				}
-			}
+ 			}
 
 		else if ( n->TransSym() == SYM_EPSILON )
 			{ // do nothing
@@ -285,8 +284,7 @@ unsigned int DFA_State::Size()
 		+ pad_size(sizeof(DFA_State*) * num_sym)
 		+ (accept ? pad_size(sizeof(int) * accept->size()) : 0)
 		+ (nfa_states ? pad_size(sizeof(NFA_State*) * nfa_states->length()) : 0)
-		+ (meta_ec ? meta_ec->Size() : 0)
-		+ (centry ? padded_sizeof(CacheEntry) : 0);
+		+ (meta_ec ? meta_ec->Size() : 0);
 	}
 
 DFA_State_Cache::DFA_State_Cache()
@@ -296,19 +294,16 @@ DFA_State_Cache::DFA_State_Cache()
 
 DFA_State_Cache::~DFA_State_Cache()
 	{
-	IterCookie* i = states.InitForIteration();
-	CacheEntry* e;
-	while ( (e = (CacheEntry*) states.NextEntry(i)) )
+	for ( auto& entry : states )
 		{
-		assert(e->state);
-		delete e->hash;
-		Unref(e->state);
-		delete e;
+		assert(entry.second);
+		Unref(entry.second);
 		}
+
+	states.clear();
 	}
 
-DFA_State* DFA_State_Cache::Lookup(const NFA_state_list& nfas,
-						HashKey** hash)
+DFA_State* DFA_State_Cache::Lookup(const NFA_state_list& nfas, DigestStr* digest)
 	{
 	// We assume that state ID's don't exceed 10 digits, plus
 	// we allow one more character for the delimiter.
@@ -335,37 +330,27 @@ DFA_State* DFA_State_Cache::Lookup(const NFA_state_list& nfas,
 
 	// We use the short MD5 instead of the full string for the
 	// HashKey because the data is copied into the key.
-	u_char digest[16];
-	internal_md5(id_tag, p - id_tag, digest);
+	u_char digest_bytes[16];
+	internal_md5(id_tag, p - id_tag, digest_bytes);
+	*digest = DigestStr(digest_bytes, 16);
 
-	*hash = new HashKey(&digest, sizeof(digest));
-	CacheEntry* e = states.Lookup(*hash);
-	if ( ! e )
+	auto entry = states.find(*digest);
+	if ( entry == states.end() )
 		{
 		++misses;
-		return 0;
+		return nullptr;
 		}
 	++hits;
 
-	delete *hash;
-	*hash = 0;
+	digest->clear();
 
-	return e->state;
+	return entry->second;
 	}
 
-DFA_State* DFA_State_Cache::Insert(DFA_State* state, HashKey* hash)
+DFA_State* DFA_State_Cache::Insert(DFA_State* state, DigestStr digest)
 	{
-	CacheEntry* e;
-
-	e = new CacheEntry;
-
-	e->state = state;
-	e->state->centry = e;
-	e->hash = hash;
-
-	states.Insert(hash, e);
-
-	return e->state;
+	states.emplace(std::move(digest), state);
+	return state;
 	}
 
 void DFA_State_Cache::GetStats(Stats* s)
@@ -378,15 +363,13 @@ void DFA_State_Cache::GetStats(Stats* s)
 	s->hits = hits;
 	s->misses = misses;
 
-	CacheEntry* e;
-
-	IterCookie* i = states.InitForIteration();
-	while ( (e = (CacheEntry*) states.NextEntry(i)) )
+	for ( const auto& state : states )
 		{
+		DFA_State* e = state.second;
 		++s->dfa_states;
-		s->nfa_states += e->state->NFAStateNum();
-		e->state->Stats(&s->computed, &s->uncomputed);
-		s->mem += pad_size(e->state->Size()) + padded_sizeof(*e->state);
+		s->nfa_states += e->NFAStateNum();
+		e->Stats(&s->computed, &s->uncomputed);
+		s->mem += pad_size(e->Size()) + padded_sizeof(*e);
 		}
 	}
 
@@ -402,12 +385,12 @@ DFA_Machine::DFA_Machine(NFA_Machine* n, EquivClass* arg_ec)
 	dfa_state_cache = new DFA_State_Cache();
 
 	NFA_state_list* ns = new NFA_state_list;
-	ns->append(n->FirstState());
+	ns->push_back(n->FirstState());
 
 	if ( ns->length() > 0 )
 		{
 		NFA_state_list* state_set = epsilon_closure(ns);
-		(void) StateSetToDFA_State(state_set, start_state, ec);
+		StateSetToDFA_State(state_set, start_state, ec);
 		}
 	else
 		{
@@ -445,14 +428,14 @@ unsigned int DFA_Machine::MemoryAllocation() const
 		+ nfa->MemoryAllocation();
 	}
 
-int DFA_Machine::StateSetToDFA_State(NFA_state_list* state_set,
+bool DFA_Machine::StateSetToDFA_State(NFA_state_list* state_set,
 				DFA_State*& d, const EquivClass* ec)
 	{
-	HashKey* hash;
-	d = dfa_state_cache->Lookup(*state_set, &hash);
+	DigestStr digest;
+	d = dfa_state_cache->Lookup(*state_set, &digest);
 
 	if ( d )
-		return 0;
+		return false;
 
 	AcceptingSet* accept = new AcceptingSet;
 
@@ -471,9 +454,9 @@ int DFA_Machine::StateSetToDFA_State(NFA_state_list* state_set,
 		}
 
 	DFA_State* ds = new DFA_State(state_count++, ec, state_set, accept);
-	d = dfa_state_cache->Insert(ds, hash);
+	d = dfa_state_cache->Insert(ds, std::move(digest));
 
-	return 1;
+	return true;
 	}
 
 int DFA_Machine::Rep(int sym)

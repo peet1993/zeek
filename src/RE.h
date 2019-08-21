@@ -22,10 +22,6 @@ class Specific_RE_Matcher;
 class RE_Matcher;
 class DFA_State;
 
-declare(PDict,char);
-declare(PDict,CCL);
-declare(PList,CCL);
-
 extern int case_insensitive;
 extern CCL* curr_ccl;
 extern NFA_Machine* nfa;
@@ -38,7 +34,7 @@ extern void synerr(const char str[]);
 
 typedef int AcceptIdx;
 typedef std::set<AcceptIdx> AcceptingSet;
-typedef uint64 MatchPos;
+typedef uint64_t MatchPos;
 typedef std::map<AcceptIdx, MatchPos> AcceptingMatchSet;
 typedef name_list string_list;
 
@@ -63,15 +59,22 @@ public:
 	// The following is vestigial from flex's use of "{name}" definitions.
 	// It's here because at some point we may want to support such
 	// functionality.
-	const char* LookupDef(const char* def);
+	std::string LookupDef(const std::string& def);
 
-	void InsertCCL(const char* txt, CCL* ccl) { ccl_dict.Insert(txt, ccl); }
+	void InsertCCL(const char* txt, CCL* ccl) { ccl_dict[string(txt)] = ccl; }
 	int InsertCCL(CCL* ccl)
 		{
-		ccl_list.append(ccl);
+		ccl_list.push_back(ccl);
 		return ccl_list.length() - 1;
 		}
-	CCL* LookupCCL(const char* txt)	{ return ccl_dict.Lookup(txt); }
+	CCL* LookupCCL(const char* txt)
+		{
+		const auto& iter = ccl_dict.find(string(txt));
+		if ( iter != ccl_dict.end() )
+			return iter->second;
+
+		return nullptr;
+		}
 	CCL* LookupCCL(int index)	{ return ccl_list[index]; }
 	CCL* AnyCCL();
 
@@ -123,9 +126,9 @@ protected:
 	int multiline;
 	char* pattern_text;
 
-	PDict(char) defs;
-	PDict(CCL) ccl_dict;
-	PList(CCL) ccl_list;
+	std::map<string, string> defs;
+	std::map<string, CCL*> ccl_dict;
+	PList<CCL> ccl_list;
 	EquivClass equiv_class;
 	int* ecs;
 	DFA_Machine* dfa;
@@ -171,12 +174,12 @@ protected:
 	int current_pos;
 };
 
-class RE_Matcher : SerialObj {
+class RE_Matcher {
 public:
 	RE_Matcher();
 	explicit RE_Matcher(const char* pat);
 	RE_Matcher(const char* exact_pat, const char* anywhere_pat);
-	virtual ~RE_Matcher() override;
+	virtual ~RE_Matcher();
 
 	void AddPat(const char* pat);
 
@@ -212,9 +215,6 @@ public:
 	const char* PatternText() const	{ return re_exact->PatternText(); }
 	const char* AnywherePatternText() const	{ return re_anywhere->PatternText(); }
 
-	bool Serialize(SerialInfo* info) const;
-	static RE_Matcher* Unserialize(UnserialInfo* info);
-
 	unsigned int MemoryAllocation() const
 		{
 		return padded_sizeof(*this)
@@ -223,8 +223,6 @@ public:
 		}
 
 protected:
-	DECLARE_SERIAL(RE_Matcher);
-
 	Specific_RE_Matcher* re_anywhere;
 	Specific_RE_Matcher* re_exact;
 };

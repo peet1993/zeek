@@ -5,7 +5,7 @@
 // Switching parser table type fixes ambiguity problems.
 %define lr.type ielr
 
-%expect 129
+%expect 105
 
 %token TOK_ADD TOK_ADD_TO TOK_ADDR TOK_ANY
 %token TOK_ATENDIF TOK_ATELSE TOK_ATIF TOK_ATIFDEF TOK_ATIFNDEF
@@ -21,11 +21,10 @@
 %token TOK_TIME TOK_TIMEOUT TOK_TIMER TOK_TYPE TOK_UNION TOK_VECTOR TOK_WHEN
 %token TOK_WHILE TOK_AS TOK_IS
 
-%token TOK_ATTR_ADD_FUNC TOK_ATTR_ENCRYPT TOK_ATTR_DEFAULT
-%token TOK_ATTR_OPTIONAL TOK_ATTR_REDEF TOK_ATTR_ROTATE_INTERVAL
-%token TOK_ATTR_ROTATE_SIZE TOK_ATTR_DEL_FUNC TOK_ATTR_EXPIRE_FUNC
+%token TOK_ATTR_ADD_FUNC TOK_ATTR_DEFAULT TOK_ATTR_OPTIONAL TOK_ATTR_REDEF
+%token TOK_ATTR_DEL_FUNC TOK_ATTR_EXPIRE_FUNC
 %token TOK_ATTR_EXPIRE_CREATE TOK_ATTR_EXPIRE_READ TOK_ATTR_EXPIRE_WRITE
-%token TOK_ATTR_RAW_OUTPUT TOK_ATTR_MERGEABLE
+%token TOK_ATTR_RAW_OUTPUT
 %token TOK_ATTR_PRIORITY TOK_ATTR_LOG TOK_ATTR_ERROR_HANDLER
 %token TOK_ATTR_TYPE_COLUMN TOK_ATTR_DEPRECATED
 
@@ -51,14 +50,14 @@
 %left '$' '[' ']' '(' ')' TOK_HAS_FIELD TOK_HAS_ATTR
 %nonassoc TOK_AS TOK_IS
 
-%type <b> opt_no_test opt_no_test_block opt_deprecated TOK_PATTERN_END
+%type <b> opt_no_test opt_no_test_block TOK_PATTERN_END
 %type <str> TOK_ID TOK_PATTERN_TEXT
 %type <id> local_id global_id def_global_id event_id global_or_event_id resolve_id begin_func case_type
 %type <id_l> local_id_list case_type_list
 %type <ic> init_class
 %type <expr> opt_init
 %type <val> TOK_CONSTANT
-%type <expr> expr opt_expr init anonymous_function
+%type <expr> expr opt_expr init anonymous_function index_slice opt_deprecated
 %type <event_expr> event
 %type <stmt> stmt stmt_list func_body for_head
 %type <type> type opt_type enum_body
@@ -165,11 +164,8 @@ static type_decl_list* copy_type_decl_list(type_decl_list* tdl)
 
 	type_decl_list* rval = new type_decl_list();
 
-	loop_over_list(*tdl, i)
-		{
-		TypeDecl* td = (*tdl)[i];
-		rval->append(new TypeDecl(*td));
-		}
+	for ( const auto& td : *tdl )
+		rval->push_back(new TypeDecl(*td));
 
 	return rval;
 	}
@@ -181,11 +177,10 @@ static attr_list* copy_attr_list(attr_list* al)
 
 	attr_list* rval = new attr_list();
 
-	loop_over_list(*al, i)
+	for ( const auto& a : *al )
 		{
-		Attr* a = (*al)[i];
 		::Ref(a);
-		rval->append(a);
+		rval->push_back(a);
 		}
 
 	return rval;
@@ -269,11 +264,11 @@ bro:
 		decl_list stmt_list
 			{
 			if ( stmts )
-				stmts->AsStmtList()->Stmts().append($2);
+				stmts->AsStmtList()->Stmts().push_back($2);
 			else
 				stmts = $2;
 
-			// Any objects creates from hereon out should not
+			// Any objects creates from here on out should not
 			// have file positions associated with them.
 			set_location(no_location);
 			}
@@ -465,6 +460,12 @@ expr:
 	|	expr '=' expr
 			{
 			set_location(@1, @3);
+
+			if ( $1->Tag() == EXPR_INDEX && $1->AsIndexExpr()->IsSlice() )
+				reporter->Error("index slice assignment may not be used"
+				                " in arbitrary expression contexts, only"
+				                " as a statement");
+
 			$$ = get_assign_expr($1, $3, in_init);
 			}
 
@@ -480,15 +481,7 @@ expr:
 			$$ = new IndexExpr($1, $3);
 			}
 
-	|	expr '[' opt_expr ':' opt_expr ']'
-			{
-			set_location(@1, @6);
-			Expr* low = $3 ? $3 : new ConstExpr(val_mgr->GetCount(0));
-			Expr* high = $5 ? $5 : new SizeExpr($1);
-			ListExpr* le = new ListExpr(low);
-			le->Append(high);
-			$$ = new IndexExpr($1, le, true);
-			}
+	|	index_slice
 
 	|	expr '$' TOK_ID
 			{
@@ -652,6 +645,7 @@ expr:
 
 	|	anonymous_function
 
+
 	|	TOK_SCHEDULE expr '{' event '}'
 			{
 			set_location(@1, @5);
@@ -703,7 +697,7 @@ expr:
 					$$ = new NameExpr(id);
 
 				if ( id->IsDeprecated() )
-					reporter->Warning("deprecated (%s)", id->Name());
+					reporter->Warning("%s", id->GetDeprecationWarning().c_str());
 				}
 			}
 
@@ -997,7 +991,7 @@ type:
 				{
 				NullStmt here;
 				if ( $1 )
-					$1->Error("not a Bro type", &here);
+					$1->Error("not a Zeek type", &here);
 				$$ = error_type();
 				}
 			else
@@ -1005,7 +999,7 @@ type:
 				Ref($$);
 
 				if ( $1->IsDeprecated() )
-					reporter->Warning("deprecated (%s)", $1->Name());
+					reporter->Warning("%s", $1->GetDeprecationWarning().c_str());
 				}
 			}
 	;
@@ -1023,7 +1017,7 @@ type_list:
 type_decl_list:
 		type_decl_list type_decl
 			{
-			$1->append($2);
+			$1->push_back($2);
 			}
 	|
 			{
@@ -1053,11 +1047,11 @@ formal_args:
 
 formal_args_decl_list:
 		formal_args_decl_list ';' formal_args_decl
-			{ $1->append($3); }
+			{ $1->push_back($3); }
 	|	formal_args_decl_list ',' formal_args_decl
-			{ $1->append($3); }
+			{ $1->push_back($3); }
 	|	formal_args_decl
-			{ $$ = new type_decl_list(); $$->append($1); }
+			{ $$ = new type_decl_list(); $$->push_back($1); }
 	;
 
 formal_args_decl:
@@ -1099,7 +1093,7 @@ decl:
 	|	TOK_REDEF global_id opt_type init_class opt_init opt_attr ';'
 			{
 			add_global($2, $3, $4, $5, $6, VAR_REDEF);
-			zeekygen_mgr->Redef($2, ::filename);
+			zeekygen_mgr->Redef($2, ::filename, $4, $5);
 			}
 
 	|	TOK_REDEF TOK_ENUM global_id TOK_ADD_TO '{'
@@ -1219,16 +1213,39 @@ func_body:
 	;
 
 anonymous_function:
-		TOK_FUNCTION begin_func func_body
-			{ $$ = new ConstExpr($2->ID_Val()); }
+		TOK_FUNCTION begin_func
+
+		'{'
+			{
+			saved_in_init.push_back(in_init);
+			in_init = 0;
+			}
+
+		stmt_list
+			{
+			in_init = saved_in_init.back();
+			saved_in_init.pop_back();
+			}
+
+		'}'
+			{
+			// Code duplication here is sad but needed. end_func actually instantiates the function
+			// and associates it with an ID. We perform that association later and need to return
+			// a lambda expression.
+
+			// Gather the ingredients for a BroFunc from the current scope
+			std::unique_ptr<function_ingredients> ingredients = gather_function_ingredients(current_scope(), $5);
+			id_list outer_ids = gather_outer_ids(pop_scope(), $5);
+
+			$$ = new LambdaExpr(std::move(ingredients), std::move(outer_ids));
+			}
 	;
 
 begin_func:
 		func_params
 			{
 			$$ = current_scope()->GenerateTemporary("anonymous-function");
-			begin_func($$, current_module.c_str(),
-				   FUNC_FLAVOR_FUNCTION, 0, $1);
+			begin_func($$, current_module.c_str(), FUNC_FLAVOR_FUNCTION, 0, $1);
 			}
 	;
 
@@ -1268,6 +1285,21 @@ init:
 	|	expr
 	;
 
+index_slice:
+		expr '[' opt_expr ':' opt_expr ']'
+			{
+			set_location(@1, @6);
+			Expr* low = $3 ? $3 : new ConstExpr(val_mgr->GetCount(0));
+			Expr* high = $5 ? $5 : new SizeExpr($1);
+
+			if ( ! IsIntegral(low->Type()->Tag()) || ! IsIntegral(high->Type()->Tag()) )
+				reporter->Error("slice notation must have integral values as indexes");
+
+			ListExpr* le = new ListExpr(low);
+			le->Append(high);
+			$$ = new IndexExpr($1, le, true);
+			}
+
 opt_attr:
 		attr_list
 	|
@@ -1276,25 +1308,21 @@ opt_attr:
 
 attr_list:
 		attr_list attr
-			{ $1->append($2); }
+			{ $1->push_back($2); }
 	|	attr
 			{
 			$$ = new attr_list;
-			$$->append($1);
+			$$->push_back($1);
 			}
 	;
 
 attr:
 		TOK_ATTR_DEFAULT '=' expr
-			{ $$ = new Attr(ATTR_DEFAULT, $3); }
+		        { $$ = new Attr(ATTR_DEFAULT, $3); }
 	|	TOK_ATTR_OPTIONAL
 			{ $$ = new Attr(ATTR_OPTIONAL); }
 	|	TOK_ATTR_REDEF
 			{ $$ = new Attr(ATTR_REDEF); }
-	|	TOK_ATTR_ROTATE_INTERVAL '=' expr
-			{ $$ = new Attr(ATTR_ROTATE_INTERVAL, $3); }
-	|	TOK_ATTR_ROTATE_SIZE '=' expr
-			{ $$ = new Attr(ATTR_ROTATE_SIZE, $3); }
 	|	TOK_ATTR_ADD_FUNC '=' expr
 			{ $$ = new Attr(ATTR_ADD_FUNC, $3); }
 	|	TOK_ATTR_DEL_FUNC '=' expr
@@ -1307,14 +1335,8 @@ attr:
 			{ $$ = new Attr(ATTR_EXPIRE_READ, $3); }
 	|	TOK_ATTR_EXPIRE_WRITE '=' expr
 			{ $$ = new Attr(ATTR_EXPIRE_WRITE, $3); }
-	|	TOK_ATTR_ENCRYPT
-			{ $$ = new Attr(ATTR_ENCRYPT); }
-	|	TOK_ATTR_ENCRYPT '=' expr
-			{ $$ = new Attr(ATTR_ENCRYPT, $3); }
 	|	TOK_ATTR_RAW_OUTPUT
 			{ $$ = new Attr(ATTR_RAW_OUTPUT); }
-	|	TOK_ATTR_MERGEABLE
-			{ $$ = new Attr(ATTR_MERGEABLE); }
 	|	TOK_ATTR_PRIORITY '=' expr
 			{ $$ = new Attr(ATTR_PRIORITY, $3); }
 	|	TOK_ATTR_TYPE_COLUMN '=' expr
@@ -1325,6 +1347,19 @@ attr:
 			{ $$ = new Attr(ATTR_ERROR_HANDLER); }
 	|	TOK_ATTR_DEPRECATED
 			{ $$ = new Attr(ATTR_DEPRECATED); }
+	|	TOK_ATTR_DEPRECATED '=' TOK_CONSTANT
+			{
+			if ( IsString($3->Type()->Tag()) )
+				$$ = new Attr(ATTR_DEPRECATED, new ConstExpr($3));
+			else
+				{
+				ODesc d;
+				$3->Describe(&d);
+				reporter->Error("'&deprecated=%s' must use a string literal",
+				                d.Description());
+				$$ = new Attr(ATTR_DEPRECATED);
+				}
+			}
 	;
 
 stmt:
@@ -1481,6 +1516,15 @@ stmt:
 			    brofiler.DecIgnoreDepth();
 			}
 
+	|	index_slice '=' expr ';' opt_no_test
+			{
+			set_location(@1, @4);
+			$$ = new ExprStmt(get_assign_expr($1, $3, in_init));
+
+			if ( ! $5 )
+				brofiler.AddStmt($$);
+			}
+
 	|	expr ';' opt_no_test
 			{
 			set_location(@1, @2);
@@ -1503,7 +1547,7 @@ stmt_list:
 		stmt_list stmt
 			{
 			set_location(@1, @2);
-			$1->AsStmtList()->Stmts().append($2);
+			$1->AsStmtList()->Stmts().push_back($2);
 			$1->UpdateLocationEndInfo(@2);
 			}
 	|
@@ -1524,7 +1568,7 @@ event:
 					YYERROR;
 					}
 				if ( id->IsDeprecated() )
-					reporter->Warning("deprecated (%s)", id->Name());
+					reporter->Warning("%s", id->GetDeprecationWarning().c_str());
 				}
 
 			$$ = new EventExpr($1, $3);
@@ -1533,7 +1577,7 @@ event:
 
 case_list:
 		case_list case
-			{ $1->append($2); }
+			{ $1->push_back($2); }
 	|
 			{ $$ = new case_list; }
 	;
@@ -1551,12 +1595,12 @@ case:
 
 case_type_list:
 		case_type_list ',' case_type
-			{ $1->append($3); }
+			{ $1->push_back($3); }
 	|
 		case_type
 			{
 			$$ = new id_list;
-			$$->append($1);
+			$$->push_back($1);
 			}
 	;
 
@@ -1604,7 +1648,7 @@ for_head:
 						      false, false);
 
 			id_list* loop_vars = new id_list;
-			loop_vars->append(loop_var);
+			loop_vars->push_back(loop_var);
 
 			$$ = new ForStmt(loop_vars, $5);
 			}
@@ -1642,7 +1686,7 @@ for_head:
 				val_var = install_ID($5, module, false, false);
 
 			id_list* loop_vars = new id_list;
-			loop_vars->append(key_var);
+			loop_vars->push_back(key_var);
 
 			$$ = new ForStmt(loop_vars, $7, val_var);
 			}
@@ -1669,11 +1713,11 @@ for_head:
 
 local_id_list:
 		local_id_list ',' local_id
-			{ $1->append($3); }
+			{ $1->push_back($3); }
 	|	local_id
 			{
 			$$ = new id_list;
-			$$->append($1);
+			$$->push_back($1);
 			}
 	;
 
@@ -1730,7 +1774,7 @@ global_or_event_id:
 
 					if ( t->Tag() != TYPE_FUNC ||
 					     t->AsFuncType()->Flavor() != FUNC_FLAVOR_FUNCTION )
-						reporter->Warning("deprecated (%s)", $$->Name());
+						reporter->Warning("%s", $$->GetDeprecationWarning().c_str());
 					}
 
 				delete [] $1;
@@ -1776,9 +1820,23 @@ opt_no_test_block:
 
 opt_deprecated:
 		TOK_ATTR_DEPRECATED
-			{ $$ = true; }
+			{ $$ = new ConstExpr(new StringVal("")); }
 	|
-			{ $$ = false; }
+		TOK_ATTR_DEPRECATED '=' TOK_CONSTANT
+			{
+			if ( IsString($3->Type()->Tag()) )
+				$$ = new ConstExpr($3);
+			else
+				{
+				ODesc d;
+				$3->Describe(&d);
+				reporter->Error("'&deprecated=%s' must use a string literal",
+				                d.Description());
+				$$ = new ConstExpr(new StringVal(""));
+				}
+			}
+	|
+			{ $$ = nullptr; }
 
 %%
 

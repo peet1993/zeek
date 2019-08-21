@@ -64,7 +64,9 @@ private:
 	string meta_prefix;
 
 	int gzip_level; // level > 0 enables gzip compression
+	string gzip_file_extension;
 	bool use_json;
+	bool enable_utf_8;
 	string json_timestamps;
 
 	threading::formatter::Formatter* formatter;

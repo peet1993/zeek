@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -29,6 +29,8 @@
 
 #include <algorithm>
 
+#include <broker/error.hh>
+
 #include "Base64.h"
 #include "Stmt.h"
 #include "Scope.h"
@@ -41,7 +43,6 @@
 #include "analyzer/protocol/login/Login.h"
 #include "Sessions.h"
 #include "RE.h"
-#include "Serializer.h"
 #include "Event.h"
 #include "Traverse.h"
 #include "Reporter.h"
@@ -74,11 +75,11 @@ std::string render_call_stack()
 
 		if ( ci.args )
 			{
-			loop_over_list(*ci.args, i)
+			for ( const auto& arg : *ci.args )
 				{
 				ODesc d;
 				d.SetShort();
-				(*ci.args)[i]->Describe(&d);
+				arg->Describe(&d);
 
 				if ( ! arg_desc.empty() )
 					arg_desc += ", ";
@@ -122,114 +123,16 @@ Func::~Func()
 	}
 
 void Func::AddBody(Stmt* /* new_body */, id_list* /* new_inits */,
-			int /* new_frame_size */, int /* priority */)
+		   size_t /* new_frame_size */, int /* priority */)
 	{
 	Internal("Func::AddBody called");
 	}
 
-bool Func::Serialize(SerialInfo* info) const
+Func* Func::DoClone()
 	{
-	return SerialObj::Serialize(info);
-	}
-
-Func* Func::Unserialize(UnserialInfo* info)
-	{
-	Func* f = (Func*) SerialObj::Unserialize(info, SER_FUNC);
-
-	// For builtins, we return a reference to the (hopefully) already
-	// existing function.
-	if ( f && f->kind == BUILTIN_FUNC )
-		{
-		const char* name = ((BuiltinFunc*) f)->Name();
-		ID* id = global_scope()->Lookup(name);
-		if ( ! id )
-			{
-			info->s->Error(fmt("can't find built-in %s", name));
-			return 0;
-			}
-
-		if ( ! (id->HasVal() && id->ID_Val()->Type()->Tag() == TYPE_FUNC) )
-			{
-			info->s->Error(fmt("ID %s is not a built-in", name));
-			return 0;
-			}
-
-		Unref(f);
-		f = id->ID_Val()->AsFunc();
-		Ref(f);
-		}
-
-	return f;
-	}
-
-bool Func::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_FUNC, BroObj);
-
-	if ( ! SERIALIZE(int(bodies.size())) )
-		return false;
-
-	for ( unsigned int i = 0; i < bodies.size(); ++i )
-		{
-		if ( ! bodies[i].stmts->Serialize(info) )
-			return false;
-		if ( ! SERIALIZE(bodies[i].priority) )
-			return false;
-		}
-
-	if ( ! SERIALIZE(char(kind) ) )
-		return false;
-
-	if ( ! type->Serialize(info) )
-		return false;
-
-	if ( ! SERIALIZE(Name()) )
-		return false;
-
-	// We don't serialize scope as only global functions are considered here
-	// anyway.
-	return true;
-	}
-
-bool Func::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BroObj);
-
-	int len;
-	if ( ! UNSERIALIZE(&len) )
-		return false;
-
-	while ( len-- )
-		{
-		Body b;
-		b.stmts = Stmt::Unserialize(info);
-		if ( ! b.stmts )
-			return false;
-
-		if ( ! UNSERIALIZE(&b.priority) )
-			return false;
-
-		bodies.push_back(b);
-		}
-
-	char c;
-	if ( ! UNSERIALIZE(&c) )
-		return false;
-
-	kind = (Kind) c;
-
-	type = BroType::Unserialize(info);
-	if ( ! type )
-		return false;
-
-	const char* n;
-	if ( ! UNSERIALIZE_STR(&n, 0) )
-		return false;
-
-	name = n;
-	delete [] n;
-
-	return true;
+	// By default, ok just to return a reference. Func does not have any state
+	// that is different across instances.
+	return this;
 	}
 
 void Func::DescribeDebug(ODesc* d, const val_list* args) const
@@ -294,6 +197,21 @@ TraversalCode Func::Traverse(TraversalCallback* cb) const
 	HANDLE_TC_STMT_POST(tc);
 	}
 
+void Func::CopyStateInto(Func* other) const
+	{
+	std::for_each(bodies.begin(), bodies.end(), [](const Body& b) { Ref(b.stmts); });
+
+	other->bodies = bodies;
+	other->scope = scope;
+	other->kind = kind;
+
+	Ref(type);
+	other->type = type;
+
+	other->name = name;
+	other->unique_id = unique_id;
+	}
+
 std::pair<bool, Val*> Func::HandlePluginResult(std::pair<bool, Val*> plugin_result, val_list* args, function_flavor flavor) const
 	{
 	// Helper function factoring out this code from BroFunc:Call() for
@@ -342,15 +260,14 @@ std::pair<bool, Val*> Func::HandlePluginResult(std::pair<bool, Val*> plugin_resu
 		}
 	}
 
-	loop_over_list(*args, i)
-		Unref((*args)[i]);
+	for ( const auto& arg : *args )
+		Unref(arg);
 
 	return plugin_result;
 	}
 
 BroFunc::BroFunc(ID* arg_id, Stmt* arg_body, id_list* aggr_inits,
-		int arg_frame_size, int priority)
-: Func(BRO_FUNC)
+		 size_t arg_frame_size, int priority) : Func(BRO_FUNC)
 	{
 	name = arg_id->Name();
 	type = arg_id->Type()->Ref();
@@ -367,17 +284,15 @@ BroFunc::BroFunc(ID* arg_id, Stmt* arg_body, id_list* aggr_inits,
 
 BroFunc::~BroFunc()
 	{
-	for ( unsigned int i = 0; i < bodies.size(); ++i )
-		Unref(bodies[i].stmts);
+	std::for_each(bodies.begin(), bodies.end(),
+		[](Body& b) { Unref(b.stmts); });
+	Unref(closure);
 	}
 
 int BroFunc::IsPure() const
 	{
-	for ( unsigned int i = 0; i < bodies.size(); ++i )
-		if ( ! bodies[i].stmts->IsPure() )
-			return 0;
-
-	return 1;
+	return std::all_of(bodies.begin(), bodies.end(),
+		[](const Body& b) { return b.stmts->IsPure(); });
 	}
 
 Val* BroFunc::Call(val_list* args, Frame* parent) const
@@ -385,7 +300,6 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 #ifdef PROFILE_BRO_FUNCTIONS
 	DEBUG_MSG("Function: %s\n", Name());
 #endif
-
 	SegmentProfiler(segment_logger, location);
 
 	if ( sample_logger )
@@ -405,13 +319,16 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 		{
 		// Can only happen for events and hooks.
 		assert(Flavor() == FUNC_FLAVOR_EVENT || Flavor() == FUNC_FLAVOR_HOOK);
-		loop_over_list(*args, i)
-			Unref((*args)[i]);
+		for ( const auto& arg : *args )
+			Unref(arg);
 
 		return Flavor() == FUNC_FLAVOR_HOOK ? val_mgr->GetTrue() : 0;
 		}
 
 	Frame* f = new Frame(frame_size, this, args);
+
+	if ( closure )
+		f->CaptureClosure(closure, outer_ids);
 
 	// Hand down any trigger.
 	if ( parent )
@@ -436,22 +353,22 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 	stmt_flow_type flow = FLOW_NEXT;
 	Val* result = 0;
 
-	for ( size_t i = 0; i < bodies.size(); ++i )
+	for ( const auto& body : bodies )
 		{
 		if ( sample_logger )
 			sample_logger->LocationSeen(
-				bodies[i].stmts->GetLocationInfo());
+				body.stmts->GetLocationInfo());
 
 		Unref(result);
 
+		// Fill in the rest of the frame with the function's arguments.
 		loop_over_list(*args, j)
 			{
 			Val* arg = (*args)[j];
 
 			if ( f->NthElement(j) != arg )
 				{
-				// Either not yet set, or somebody reassigned
-				// the frame slot.
+				// Either not yet set, or somebody reassigned the frame slot.
 				Ref(arg);
 				f->SetElement(j, arg);
 				}
@@ -461,14 +378,18 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 
 		try
 			{
-			result = bodies[i].stmts->Exec(f, flow);
+			result = body.stmts->Exec(f, flow);
 			}
 
 		catch ( InterpreterException& e )
 			{
 			// Already reported, but now determine whether to unwind further.
 			if ( Flavor() == FUNC_FLAVOR_FUNCTION )
+				{
+				Unref(f);
+				// Result not set b/c exception was thrown
 				throw;
+				}
 
 			// Continue exec'ing remaining bodies of hooks/events.
 			continue;
@@ -502,8 +423,8 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 
 	// We have an extra Ref for each argument (so that they don't get
 	// deleted between bodies), release that.
-	loop_over_list(*args, k)
-		Unref((*args)[k]);
+	for ( const auto& arg : *args )
+		Unref(arg);
 
 	if ( Flavor() == FUNC_FLAVOR_HOOK )
 		{
@@ -517,7 +438,7 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 		 (flow != FLOW_RETURN /* we fell off the end */ ||
 		  ! result /* explicit return with no result */) &&
 		 ! f->HasDelayed() )
-		reporter->Warning("non-void function returns without a value: %s",
+		reporter->Warning("non-void function returning without a value: %s",
 				  Name());
 
 	if ( result && g_trace_state.DoTrace() )
@@ -529,13 +450,14 @@ Val* BroFunc::Call(val_list* args, Frame* parent) const
 		}
 
 	g_frame_stack.pop_back();
+
 	Unref(f);
 
 	return result;
 	}
 
-void BroFunc::AddBody(Stmt* new_body, id_list* new_inits, int new_frame_size,
-		int priority)
+void BroFunc::AddBody(Stmt* new_body, id_list* new_inits,
+		      size_t new_frame_size, int priority)
 	{
 	if ( new_frame_size > frame_size )
 		frame_size = new_frame_size;
@@ -546,8 +468,8 @@ void BroFunc::AddBody(Stmt* new_body, id_list* new_inits, int new_frame_size,
 		{
 		// For functions, we replace the old body with the new one.
 		assert(bodies.size() <= 1);
-		for ( unsigned int i = 0; i < bodies.size(); ++i )
-			Unref(bodies[i].stmts);
+		for ( const auto& body : bodies )
+			Unref(body.stmts);
 		bodies.clear();
 		}
 
@@ -557,6 +479,64 @@ void BroFunc::AddBody(Stmt* new_body, id_list* new_inits, int new_frame_size,
 
 	bodies.push_back(b);
 	sort(bodies.begin(), bodies.end());
+	}
+
+void BroFunc::AddClosure(id_list ids, Frame* f)
+	{
+	if ( ! f )
+		return;
+
+	SetOuterIDs(std::move(ids));
+	SetClosureFrame(f);
+	}
+
+void BroFunc::SetClosureFrame(Frame* f)
+	{
+	if ( closure )
+		reporter->InternalError("Tried to override closure for BroFunc %s.",
+					Name());
+
+	closure = f;
+	Ref(closure);
+	}
+
+bool BroFunc::UpdateClosure(const broker::vector& data)
+	{
+	auto result = Frame::Unserialize(data);
+	if ( ! result.first )
+		return false;
+
+	Frame* new_closure = result.second;
+	if ( new_closure )
+		new_closure->SetFunction(this);
+
+	if ( closure )
+		Unref(closure);
+
+	closure = new_closure;
+
+	return true;
+	}
+
+
+Func* BroFunc::DoClone()
+	{
+	// BroFunc could hold a closure. In this case a clone of it must
+	// store a copy of this closure.
+	BroFunc* other = new BroFunc();
+
+	CopyStateInto(other);
+
+	other->frame_size = frame_size;
+	other->closure = closure ? closure->SelectiveClone(outer_ids) : nullptr;
+	other->outer_ids = outer_ids;
+
+	return other;
+	}
+
+broker::expected<broker::data> BroFunc::SerializeClosure() const
+	{
+	return Frame::Serialize(closure, outer_ids);
 	}
 
 void BroFunc::Describe(ODesc* d) const
@@ -578,25 +558,10 @@ Stmt* BroFunc::AddInits(Stmt* body, id_list* inits)
 		return body;
 
 	StmtList* stmt_series = new StmtList;
-	stmt_series->Stmts().append(new InitStmt(inits));
-	stmt_series->Stmts().append(body);
+	stmt_series->Stmts().push_back(new InitStmt(inits));
+	stmt_series->Stmts().push_back(body);
 
 	return stmt_series;
-	}
-
-IMPLEMENT_SERIAL(BroFunc, SER_BRO_FUNC);
-
-bool BroFunc::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_BRO_FUNC, Func);
-	return SERIALIZE(frame_size);
-	}
-
-bool BroFunc::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Func);
-
-	return UNSERIALIZE(&frame_size);
 	}
 
 BuiltinFunc::BuiltinFunc(built_in_func arg_func, const char* arg_name,
@@ -660,8 +625,8 @@ Val* BuiltinFunc::Call(val_list* args, Frame* parent) const
 	Val* result = func(parent, args);
 	call_stack.pop_back();
 
-	loop_over_list(*args, i)
-		Unref((*args)[i]);
+	for ( const auto& arg : *args )
+		Unref(arg);
 
 	// Don't Unref() args, that's the caller's responsibility.
 	if ( result && g_trace_state.DoTrace() )
@@ -679,20 +644,6 @@ void BuiltinFunc::Describe(ODesc* d) const
 	{
 	d->Add(Name());
 	d->AddCount(is_pure);
-	}
-
-IMPLEMENT_SERIAL(BuiltinFunc, SER_BUILTIN_FUNC);
-
-bool BuiltinFunc::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_BUILTIN_FUNC, Func);
-	return true;
-	}
-
-bool BuiltinFunc::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Func);
-	return true;
 	}
 
 void builtin_error(const char* msg, BroObj* arg)
@@ -761,13 +712,13 @@ void builtin_error(const char* msg, BroObj* arg)
 		emit(last_call.call);
 	}
 
-#include "bro.bif.func_h"
+#include "zeek.bif.func_h"
 #include "stats.bif.func_h"
 #include "reporter.bif.func_h"
 #include "strings.bif.func_h"
 #include "option.bif.func_h"
 
-#include "bro.bif.func_def"
+#include "zeek.bif.func_def"
 #include "stats.bif.func_def"
 #include "reporter.bif.func_def"
 #include "strings.bif.func_def"
@@ -794,7 +745,7 @@ void init_builtin_funcs()
 
 	var_sizes = internal_type("var_sizes")->AsTableType();
 
-#include "bro.bif.func_init"
+#include "zeek.bif.func_init"
 #include "stats.bif.func_init"
 #include "reporter.bif.func_init"
 #include "strings.bif.func_init"

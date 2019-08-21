@@ -91,12 +91,6 @@ bool Analyzer::IsAnalyzer(const char* name)
 	return strcmp(analyzer_mgr->GetComponentName(tag).c_str(), name) == 0;
 	}
 
-// Used in debugging output.
-static string fmt_analyzer(Analyzer* a)
-	{
-	return string(a->GetAnalyzerName()) + fmt("[%d]", a->GetID());
-	}
-
 Analyzer::Analyzer(const char* name, Connection* conn)
 	{
 	Tag tag = analyzer_mgr->GetComponentTag(name);
@@ -204,7 +198,7 @@ void Analyzer::Done()
 	finished = true;
 	}
 
-void Analyzer::NextPacket(int len, const u_char* data, bool is_orig, uint64 seq,
+void Analyzer::NextPacket(int len, const u_char* data, bool is_orig, uint64_t seq,
 				const IP_Hdr* ip, int caplen)
 	{
 	if ( skip )
@@ -251,7 +245,7 @@ void Analyzer::NextStream(int len, const u_char* data, bool is_orig)
 		}
 	}
 
-void Analyzer::NextUndelivered(uint64 seq, int len, bool is_orig)
+void Analyzer::NextUndelivered(uint64_t seq, int len, bool is_orig)
 	{
 	if ( skip )
 		return;
@@ -288,7 +282,7 @@ void Analyzer::NextEndOfData(bool is_orig)
 	}
 
 void Analyzer::ForwardPacket(int len, const u_char* data, bool is_orig,
-				uint64 seq, const IP_Hdr* ip, int caplen)
+				uint64_t seq, const IP_Hdr* ip, int caplen)
 	{
 	if ( output_handler )
 		output_handler->DeliverPacket(len, data, is_orig, seq,
@@ -336,7 +330,7 @@ void Analyzer::ForwardStream(int len, const u_char* data, bool is_orig)
 	AppendNewChildren();
 	}
 
-void Analyzer::ForwardUndelivered(uint64 seq, int len, bool is_orig)
+void Analyzer::ForwardUndelivered(uint64_t seq, int len, bool is_orig)
 	{
 	if ( output_handler )
 		output_handler->Undelivered(seq, len, is_orig);
@@ -381,7 +375,11 @@ void Analyzer::ForwardEndOfData(bool orig)
 
 bool Analyzer::AddChildAnalyzer(Analyzer* analyzer, bool init)
 	{
-	if ( HasChildAnalyzer(analyzer->GetAnalyzerTag()) )
+	auto t = analyzer->GetAnalyzerTag();
+	auto it = std::find(prevented.begin(), prevented.end(), t);
+	auto prevent = (it != prevented.end());
+
+	if ( HasChildAnalyzer(t) || prevent )
 		{
 		analyzer->Done();
 		delete analyzer;
@@ -407,46 +405,67 @@ bool Analyzer::AddChildAnalyzer(Analyzer* analyzer, bool init)
 
 Analyzer* Analyzer::AddChildAnalyzer(Tag analyzer)
 	{
-	if ( ! HasChildAnalyzer(analyzer) )
-		{
-		Analyzer* a = analyzer_mgr->InstantiateAnalyzer(analyzer, conn);
+	if ( HasChildAnalyzer(analyzer) )
+		return nullptr;
 
-		if ( a && AddChildAnalyzer(a) )
-			return a;
+	auto it = std::find(prevented.begin(), prevented.end(), analyzer);
+
+	if ( it != prevented.end() )
+		return nullptr;
+
+	Analyzer* a = analyzer_mgr->InstantiateAnalyzer(analyzer, conn);
+
+	if ( a && AddChildAnalyzer(a) )
+		return a;
+
+	return nullptr;
+	}
+
+bool Analyzer::RemoveChild(const analyzer_list& children, ID id)
+	{
+	for ( const auto& i : children )
+		{
+		if ( i->id != id )
+			continue;
+
+		if ( i->finished || i->removing )
+			return false;
+
+		DBG_LOG(DBG_ANALYZER, "%s disabling child %s",
+		        fmt_analyzer(this).c_str(), fmt_analyzer(i).c_str());
+		// We just flag it as being removed here but postpone
+		// actually doing that to later. Otherwise, we'd need
+		// to call Done() here, which then in turn might
+		// cause further code to be executed that may assume
+		// something not true because of a violation that
+		// triggered the removal in the first place.
+		i->removing = true;
+		return true;
 		}
 
-	return 0;
+	return false;
 	}
 
-void Analyzer::RemoveChildAnalyzer(Analyzer* analyzer)
+bool Analyzer::RemoveChildAnalyzer(ID id)
 	{
-	LOOP_OVER_CHILDREN(i)
-		if ( *i == analyzer && ! (analyzer->finished || analyzer->removing) )
-			{
-			DBG_LOG(DBG_ANALYZER, "%s disabling child %s",
-					fmt_analyzer(this).c_str(), fmt_analyzer(*i).c_str());
-			// We just flag it as being removed here but postpone
-			// actually doing that to later. Otherwise, we'd need
-			// to call Done() here, which then in turn might
-			// cause further code to be executed that may assume
-			// something not true because of a violation that
-			// triggered the removal in the first place.
-			(*i)->removing = true;
-			return;
-			}
+	return RemoveChild(children, id) || RemoveChild(new_children, id);
 	}
 
-void Analyzer::RemoveChildAnalyzer(ID id)
+bool Analyzer::Remove()
 	{
-	LOOP_OVER_CHILDREN(i)
-		if ( (*i)->id == id && ! ((*i)->finished || (*i)->removing) )
-			{
-			DBG_LOG(DBG_ANALYZER, "%s  disabling child %s",
-					fmt_analyzer(this).c_str(), fmt_analyzer(*i).c_str());
-			// See comment above.
-			(*i)->removing = true;
-			return;
-			}
+	assert(parent);
+	parent->RemoveChildAnalyzer(this);
+	return removing;
+	}
+
+void Analyzer::PreventChildren(Tag tag)
+	{
+	auto it = std::find(prevented.begin(), prevented.end(), tag);
+
+	if ( it != prevented.end() )
+		return;
+
+	prevented.emplace_back(tag);
 	}
 
 bool Analyzer::HasChildAnalyzer(Tag tag)
@@ -610,7 +629,7 @@ SupportAnalyzer* Analyzer::FirstSupportAnalyzer(bool orig)
 	}
 
 void Analyzer::DeliverPacket(int len, const u_char* data, bool is_orig,
-				uint64 seq, const IP_Hdr* ip, int caplen)
+				uint64_t seq, const IP_Hdr* ip, int caplen)
 	{
 	DBG_LOG(DBG_ANALYZER, "%s DeliverPacket(%d, %s, %" PRIu64", %p, %d) [%s%s]",
 			fmt_analyzer(this).c_str(), len, is_orig ? "T" : "F", seq, ip, caplen,
@@ -624,7 +643,7 @@ void Analyzer::DeliverStream(int len, const u_char* data, bool is_orig)
 			fmt_bytes((const char*) data, min(40, len)), len > 40 ? "..." : "");
 	}
 
-void Analyzer::Undelivered(uint64 seq, int len, bool is_orig)
+void Analyzer::Undelivered(uint64_t seq, int len, bool is_orig)
 	{
 	DBG_LOG(DBG_ANALYZER, "%s Undelivered(%" PRIu64", %d, %s)",
 			fmt_analyzer(this).c_str(), seq, len, is_orig ? "T" : "F");
@@ -679,6 +698,9 @@ void Analyzer::ProtocolConfirmation(Tag arg_tag)
 
 void Analyzer::ProtocolViolation(const char* reason, const char* data, int len)
 	{
+	if ( ! protocol_violation )
+		return;
+
 	StringVal* r;
 
 	if ( data && len )
@@ -691,9 +713,6 @@ void Analyzer::ProtocolViolation(const char* reason, const char* data, int len)
 		}
 	else
 		r = new StringVal(reason);
-
-	if ( ! protocol_violation )
-		return;
 
 	EnumVal* tval = tag.AsEnumVal();
 	Ref(tval);
@@ -713,7 +732,7 @@ void Analyzer::AddTimer(analyzer_timer_func timer, double t,
 		AnalyzerTimer(this, timer, t, do_expire, type);
 
 	Conn()->GetTimerMgr()->Add(analyzer_timer);
-	timers.append(analyzer_timer);
+	timers.push_back(analyzer_timer);
 	}
 
 void Analyzer::RemoveTimer(Timer* t)
@@ -728,11 +747,11 @@ void Analyzer::CancelTimers()
 	// traversing.  Thus, we first make a copy of the list which we then
 	// iterate through.
 	timer_list tmp(timers.length());
-	loop_over_list(timers, j)
-		tmp.append(timers[j]);
+	std::copy(timers.begin(), timers.end(), back_inserter(tmp));
 
-	loop_over_list(tmp, i)
-		Conn()->GetTimerMgr()->Cancel(tmp[i]);
+	// TODO: could be a for_each
+	for ( auto timer : tmp )
+		Conn()->GetTimerMgr()->Cancel(timer);
 
 	timers_canceled = 1;
 	timers.clear();
@@ -816,7 +835,7 @@ SupportAnalyzer* SupportAnalyzer::Sibling(bool only_active) const
 	}
 
 void SupportAnalyzer::ForwardPacket(int len, const u_char* data, bool is_orig,
-					uint64 seq, const IP_Hdr* ip, int caplen)
+					uint64_t seq, const IP_Hdr* ip, int caplen)
 	{
 	// We do not call parent's method, as we're replacing the functionality.
 
@@ -857,7 +876,7 @@ void SupportAnalyzer::ForwardStream(int len, const u_char* data, bool is_orig)
 		Parent()->DeliverStream(len, data, is_orig);
 	}
 
-void SupportAnalyzer::ForwardUndelivered(uint64 seq, int len, bool is_orig)
+void SupportAnalyzer::ForwardUndelivered(uint64_t seq, int len, bool is_orig)
 	{
 	// We do not call parent's method, as we're replacing the functionality.
 

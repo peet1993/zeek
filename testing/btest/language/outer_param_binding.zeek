@@ -1,4 +1,4 @@
-# @TEST-EXEC-FAIL: bro -b %INPUT >out 2>&1
+# @TEST-EXEC-FAIL: zeek -b %INPUT >out 2>&1
 # @TEST-EXEC: TEST_DIFF_CANONIFIER=$SCRIPTS/diff-remove-abspath btest-diff out
 
 type Foo: record {
@@ -12,6 +12,9 @@ function bar(b: string, c: string)
 	f = [$x=function(a: string) : string
 			{
 			local x = 0;
+			# Fail here: we've captured the closure.
+			# d is already defined.
+			local d = 10;
 			print x;
 			print c, d;
 			return cat(a, " ", b);
@@ -23,5 +26,6 @@ function bar(b: string, c: string)
 
 event zeek_init()
 	{
+	bar("1", "20");
 	bar("1", "20");
 	}

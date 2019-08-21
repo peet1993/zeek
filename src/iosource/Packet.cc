@@ -2,8 +2,6 @@
 #include "Packet.h"
 #include "Sessions.h"
 #include "iosource/Manager.h"
-#include "SerialInfo.h"
-#include "Serializer.h"
 
 extern "C" {
 #ifdef HAVE_NET_ETHERNET_H
@@ -18,8 +16,8 @@ extern "C" {
 #endif
 }
 
-void Packet::Init(int arg_link_type, pkt_timeval *arg_ts, uint32 arg_caplen,
-		  uint32 arg_len, const u_char *arg_data, int arg_copy,
+void Packet::Init(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_caplen,
+		  uint32_t arg_len, const u_char *arg_data, int arg_copy,
 		  std::string arg_tag)
 	{
 	if ( data && copy )
@@ -418,7 +416,7 @@ void Packet::ProcessLayer2()
 		{
 		// See https://www.tcpdump.org/linktypes/LINKTYPE_NFLOG.html
 
-		uint8 protocol = pdata[0];
+		uint8_t protocol = pdata[0];
 
 		if ( protocol == AF_INET )
 			l3_proto = L3_IPV4;
@@ -430,7 +428,7 @@ void Packet::ProcessLayer2()
 			return;
 			}
 
-		uint8 version = pdata[1];
+		uint8_t version = pdata[1];
 
 		if ( version != 0 )
 			{
@@ -441,8 +439,8 @@ void Packet::ProcessLayer2()
 		// Skip to TLVs.
 		pdata += 4;
 
-		uint16 tlv_len;
-		uint16 tlv_type;
+		uint16_t tlv_len;
+		uint16_t tlv_type;
 
 		while ( true )
 			{
@@ -455,8 +453,8 @@ void Packet::ProcessLayer2()
 			// TLV Type and Length values are specified in host byte order
 			// (libpcap should have done any needed byteswapping already).
 
-			tlv_len = *(reinterpret_cast<const uint16*>(pdata));
-			tlv_type = *(reinterpret_cast<const uint16*>(pdata + 2));
+			tlv_len = *(reinterpret_cast<const uint16_t*>(pdata));
+			tlv_type = *(reinterpret_cast<const uint16_t*>(pdata + 2));
 
 			auto constexpr nflog_type_payload = 9;
 
@@ -682,66 +680,3 @@ void Packet::Describe(ODesc* d) const
 	d->Add(ip.DstAddr());
 	}
 
-bool Packet::Serialize(SerialInfo* info) const
-	{
-	return SERIALIZE(uint32(ts.tv_sec)) &&
-		SERIALIZE(uint32(ts.tv_usec)) &&
-		SERIALIZE(uint32(len)) &&
-		SERIALIZE(link_type) &&
-		info->s->Write(tag.c_str(), tag.length(), "tag") &&
-		info->s->Write((const char*)data, cap_len, "data");
-	}
-
-#ifdef DEBUG
-static iosource::PktDumper* dump = 0;
-#endif
-
-Packet* Packet::Unserialize(UnserialInfo* info)
-	{
-	pkt_timeval ts;
-	uint32 len, link_type;
-
-	if ( ! (UNSERIALIZE((uint32 *)&ts.tv_sec) &&
-		UNSERIALIZE((uint32 *)&ts.tv_usec) &&
-		UNSERIALIZE(&len) &&
-		UNSERIALIZE(&link_type)) )
-		return 0;
-
-	char* tag;
-	if ( ! info->s->Read((char**) &tag, 0, "tag") )
-		return 0;
-
-	const u_char* pkt;
-	int caplen;
-	if ( ! info->s->Read((char**) &pkt, &caplen, "data") )
-		{
-		delete [] tag;
-		return 0;
-		}
-
-	Packet *p = new Packet(link_type, &ts, caplen, len, pkt, true,
-			       std::string(tag));
-	delete [] tag;
-
-	// For the global timer manager, we take the global network_time as the
-	// packet's timestamp for feeding it into our packet loop.
-	if ( p->tag == "" )
-		p->time = timer_mgr->Time();
-	else
-		p->time = p->ts.tv_sec + double(p->ts.tv_usec) / 1e6;
-
-#ifdef DEBUG
-	if ( debug_logger.IsEnabled(DBG_TM) )
-		{
-		if ( ! dump )
-			dump = iosource_mgr->OpenPktDumper("tm.pcap", true);
-
-		if ( dump )
-			{
-			dump->Dump(p);
-			}
-		}
-#endif
-
-	return p;
-	}

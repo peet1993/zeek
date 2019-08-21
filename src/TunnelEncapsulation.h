@@ -3,7 +3,7 @@
 #ifndef TUNNELS_H
 #define TUNNELS_H
 
-#include "bro-config.h"
+#include "zeek-config.h"
 #include "NetVar.h"
 #include "IPAddr.h"
 #include "Val.h"
@@ -116,8 +116,8 @@ public:
 protected:
 	IPAddr src_addr;
 	IPAddr dst_addr;
-	uint16 src_port;
-	uint16 dst_port;
+	uint16_t src_port;
+	uint16_t dst_port;
 	TransportProto proto;
 	BifEnum::Tunnel::Type type;
 	Bro::UID uid;

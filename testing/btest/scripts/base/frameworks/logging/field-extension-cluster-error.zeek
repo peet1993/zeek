@@ -1,8 +1,8 @@
 # @TEST-PORT: BROKER_PORT1
 # @TEST-PORT: BROKER_PORT2
 #
-# @TEST-EXEC: btest-bg-run manager-1 "cp ../cluster-layout.zeek . && CLUSTER_NODE=manager-1 bro %INPUT"
-# @TEST-EXEC: btest-bg-run worker-1  "cp ../cluster-layout.zeek . && CLUSTER_NODE=worker-1 bro --pseudo-realtime -C -r $TRACES/wikipedia.trace %INPUT"
+# @TEST-EXEC: btest-bg-run manager-1 "cp ../cluster-layout.zeek . && CLUSTER_NODE=manager-1 zeek %INPUT"
+# @TEST-EXEC: btest-bg-run worker-1  "cp ../cluster-layout.zeek . && CLUSTER_NODE=worker-1 zeek --pseudo-realtime -C -r $TRACES/wikipedia.trace %INPUT"
 # @TEST-EXEC: btest-bg-wait 20
 # @TEST-EXEC: grep qux manager-1/reporter.log   | sed 's#line ..#line XX#g'  > manager-reporter.log
 # @TEST-EXEC: grep qux manager-1/reporter-2.log | sed 's#line ..*#line XX#g' >> manager-reporter.log
@@ -56,7 +56,7 @@ event slow_death()
 	schedule 2sec { die() };
 	}
 
-event kill_worker()
+event ready()
 	{
 	Reporter::info("qux");
 	Broker::publish("death", slow_death);
@@ -69,20 +69,30 @@ event zeek_init()
 		Broker::subscribe("death");
 		suspend_processing();
 		}
+
+	if ( Cluster::node == "manager-1" )
+		{
+		Broker::subscribe("ready");
+		}
+	}
+
+global conn_count = 0;
+
+event new_connection(c: connection)
+	{
+	++conn_count;
+
+	if ( conn_count == 30 )
+		{
+		Reporter::info("qux");
+		Broker::publish("ready", ready);
+		}
 	}
 
 event Broker::peer_added(endpoint: Broker::EndpointInfo, msg: string)
 	{
-	if ( Cluster::node == "manager-1" )
-		{
-		schedule 2sec { kill_worker() };
-		}
-
 	if ( Cluster::node == "worker-1" )
-		{
 		continue_processing();
-		Reporter::info("qux");
-		}
 	}
 
 event Broker::peer_lost(endpoint: Broker::EndpointInfo, msg: string)

@@ -4,10 +4,15 @@
 #define func_h
 
 #include <utility>
+#include <memory>
+
+#include <broker/data.hh>
+#include <broker/expected.hh>
 
 #include "BroList.h"
 #include "Obj.h"
 #include "Debug.h"
+#include "Frame.h"
 
 class Val;
 class ListExpr;
@@ -44,7 +49,7 @@ public:
 
 	// Add a new event handler to an existing function (event).
 	virtual void AddBody(Stmt* new_body, id_list* new_inits,
-				int new_frame_size, int priority = 0);
+			     size_t new_frame_size, int priority = 0);
 
 	virtual void SetScope(Scope* newscope)	{ scope = newscope; }
 	virtual Scope* GetScope() const		{ return scope; }
@@ -59,46 +64,70 @@ public:
 	void Describe(ODesc* d) const override = 0;
 	virtual void DescribeDebug(ODesc* d, const val_list* args) const;
 
-	// This (un-)serializes only a single body (as given in SerialInfo).
-	bool Serialize(SerialInfo* info) const;
-	static Func* Unserialize(UnserialInfo* info);
+	virtual Func* DoClone();
 
 	virtual TraversalCode Traverse(TraversalCallback* cb) const;
 
-	uint32 GetUniqueFuncID() const { return unique_id; }
-	static Func* GetFuncPtrByID(uint32 id)
+	uint32_t GetUniqueFuncID() const { return unique_id; }
+	static Func* GetFuncPtrByID(uint32_t id)
 		{ return id >= unique_ids.size() ? 0 : unique_ids[id]; }
 
 protected:
 	Func();
 
+	// Copies this function's state into other.
+	void CopyStateInto(Func* other) const;
+
 	// Helper function for handling result of plugin hook.
 	std::pair<bool, Val*> HandlePluginResult(std::pair<bool, Val*> plugin_result, val_list* args, function_flavor flavor) const;
-
-	DECLARE_ABSTRACT_SERIAL(Func);
 
 	vector<Body> bodies;
 	Scope* scope;
 	Kind kind;
 	BroType* type;
 	string name;
-	uint32 unique_id;
+	uint32_t unique_id;
 	static vector<Func*> unique_ids;
 };
 
 
 class BroFunc : public Func {
 public:
-	BroFunc(ID* id, Stmt* body, id_list* inits, int frame_size, int priority);
+	BroFunc(ID* id, Stmt* body, id_list* inits, size_t frame_size, int priority);
 	~BroFunc() override;
 
 	int IsPure() const override;
 	Val* Call(val_list* args, Frame* parent) const override;
 
-	void AddBody(Stmt* new_body, id_list* new_inits, int new_frame_size,
-			int priority) override;
+	/**
+	 * Adds adds a closure to the function. Closures are cloned and
+	 * future calls to BroFunc methods will not modify *f*.
+	 *
+	 * @param ids IDs that are captured by the closure.
+	 * @param f the closure to be captured.
+	 */
+	void AddClosure(id_list ids, Frame* f);
 
-	int FrameSize() const {	return frame_size; }
+	/**
+	 * Replaces the current closure with one built from *data*
+	 *
+	 * @param data a serialized closure
+	 */
+	bool UpdateClosure(const broker::vector& data);
+
+	/**
+	 * Serializes this function's closure.
+	 *
+	 * @return a serialized version of the function's closure.
+	 */
+	broker::expected<broker::data> SerializeClosure() const;
+
+	void AddBody(Stmt* new_body, id_list* new_inits,
+		     size_t new_frame_size, int priority) override;
+
+	/** Sets this function's outer_id list. */
+	void SetOuterIDs(id_list ids)
+		{ outer_ids = std::move(ids); }
 
 	void Describe(ODesc* d) const override;
 
@@ -106,9 +135,26 @@ protected:
 	BroFunc() : Func(BRO_FUNC)	{}
 	Stmt* AddInits(Stmt* body, id_list* inits);
 
-	DECLARE_SERIAL(BroFunc);
+	/**
+	 * Clones this function along with its closures.
+	 */
+	Func* DoClone() override;
 
-	int frame_size;
+	/**
+	 * Performs a selective clone of *f* using the IDs that were
+	 * captured in the function's closure.
+	 *
+	 * @param f the frame to be cloned.
+	 */
+	void SetClosureFrame(Frame* f);
+
+private:
+	size_t frame_size;
+
+	// List of the outer IDs used in the function.
+	id_list outer_ids;
+	// The frame the BroFunc was initialized in.
+	Frame* closure = nullptr;
 };
 
 typedef Val* (*built_in_func)(Frame* frame, val_list* args);
@@ -127,8 +173,6 @@ public:
 protected:
 	BuiltinFunc()	{ func = 0; is_pure = 0; }
 
-	DECLARE_SERIAL(BuiltinFunc);
-
 	built_in_func func;
 	int is_pure;
 };
@@ -145,6 +189,17 @@ struct CallInfo {
 	const Func* func;
 	const val_list* args;
 };
+
+// Struct that collects all the specifics defining a Func. Used for BroFuncs
+// with closures.
+struct function_ingredients {
+	ID* id;
+	Stmt* body;
+	id_list* inits;
+	int frame_size;
+	int priority;
+	Scope* scope;
+	};
 
 extern vector<CallInfo> call_stack;
 

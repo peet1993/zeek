@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <sstream>
 #include <errno.h>
@@ -111,3 +111,14 @@ string Formatter::Render(double d)
 	return buf;
 	}
 
+string Formatter::Render(TransportProto proto)
+	{
+	if ( proto == TRANSPORT_UDP )
+		return "udp";
+	else if ( proto == TRANSPORT_TCP )
+		return "tcp";
+	else if ( proto == TRANSPORT_ICMP )
+		return "icmp";
+	else
+		return "unknown";
+	}

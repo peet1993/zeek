@@ -4,7 +4,6 @@
 #define event_h
 
 #include "EventRegistry.h"
-#include "Serializer.h"
 
 #include "analyzer/Tag.h"
 #include "analyzer/Analyzer.h"
@@ -50,8 +49,8 @@ protected:
 	Event* next_event;
 };
 
-extern uint64 num_events_queued;
-extern uint64 num_events_dispatched;
+extern uint64_t num_events_queued;
+extern uint64_t num_events_dispatched;
 
 class EventMgr : public BroObj {
 public:
@@ -87,8 +86,8 @@ public:
 			QueueEvent(new Event(h, std::move(vl), src, aid, mgr, obj));
 		else
 			{
-			loop_over_list(vl, i)
-				Unref(vl[i]);
+			for ( const auto& v : vl )
+				Unref(v);
 			}
 		}
 

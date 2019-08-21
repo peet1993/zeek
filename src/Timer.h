@@ -6,7 +6,6 @@
 #include <string>
 
 #include <string>
-#include "SerialObj.h"
 #include "PriorityQueue.h"
 
 extern "C" {
@@ -49,10 +48,9 @@ const int NUM_TIMER_TYPES = int(TIMER_TIMERMGR_EXPIRE) + 1;
 
 extern const char* timer_type_to_string(TimerType type);
 
-class Serializer;
 class ODesc;
 
-class Timer : public SerialObj, public PQ_Element {
+class Timer : public PQ_Element {
 public:
 	Timer(double t, TimerType arg_type) : PQ_Element(t)
 		{ type = (char) arg_type; }
@@ -67,13 +65,8 @@ public:
 
 	void Describe(ODesc* d) const;
 
-	bool Serialize(SerialInfo* info) const;
-	static Timer* Unserialize(UnserialInfo* info);
-
 protected:
 	Timer()	{}
-
-	DECLARE_ABSTRACT_SERIAL(Timer);
 
 	unsigned int type:8;
 };
@@ -109,7 +102,7 @@ public:
 
 	virtual int Size() const = 0;
 	virtual int PeakSize() const = 0;
-	virtual uint64 CumulativeNum() const = 0;
+	virtual uint64_t CumulativeNum() const = 0;
 
 	double LastTimestamp() const	{ return last_timestamp; }
 	// Returns time of last advance in global network time.
@@ -149,7 +142,7 @@ public:
 
 	int Size() const override { return q->Size(); }
 	int PeakSize() const override { return q->PeakSize(); }
-	uint64 CumulativeNum() const override { return q->CumulativeNum(); }
+	uint64_t CumulativeNum() const override { return q->CumulativeNum(); }
 
 protected:
 	int DoAdvance(double t, int max_expire) override;
@@ -171,7 +164,7 @@ public:
 
 	int Size() const override { return cq_size(cq); }
 	int PeakSize() const override { return cq_max_size(cq); }
-	uint64 CumulativeNum() const override { return cq_cumulative_num(cq); }
+	uint64_t CumulativeNum() const override { return cq_cumulative_num(cq); }
 	unsigned int MemoryUsage() const;
 
 protected:

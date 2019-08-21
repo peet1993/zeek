@@ -1,8 +1,8 @@
 ##! Implementation of the drop functionality for NetControl.
 
-module NetControl;
-
 @load ./main
+
+module NetControl;
 
 export {
 	redef enum Log::ID += { DROP };
@@ -32,7 +32,7 @@ export {
 	type DropInfo: record {
 		## Time at which the recorded activity occurred.
 		ts: time		&log;
-		## ID of the rule; unique during each Bro run.
+		## ID of the rule; unique during each Zeek run.
 		rule_id: string  &log;
 		orig_h: addr 	&log;	##< The originator's IP address.
 		orig_p: port 	&log &optional;	##< The originator's port number.

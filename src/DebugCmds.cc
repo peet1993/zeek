@@ -1,7 +1,7 @@
 // Support routines to help deal with Bro debugging commands and
 // implementation of most commands.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <sys/types.h>
 
@@ -51,14 +51,16 @@ void lookup_global_symbols_regex(const string& orig_regex, vector<ID*>& matches,
 		}
 
 	Scope* global = global_scope();
-	PDict(ID)* syms = global->Vars();
+	const auto& syms = global->Vars();
 
 	ID* nextid;
-	IterCookie* cookie = syms->InitForIteration();
-	while ( (nextid = syms->NextEntry( cookie )) )
+	for ( const auto& sym : syms )
+		{
+		ID* nextid = sym.second;
 		if ( ! func_only || nextid->Type()->Tag() == TYPE_FUNC )
 			if ( ! regexec (&re, nextid->Name(), 0, 0, 0) )
 				matches.push_back(nextid);
+		}
 	}
 
 void choose_global_symbols_regex(const string& regex, vector<ID*>& choices,
@@ -114,7 +116,7 @@ void choose_global_symbols_regex(const string& regex, vector<ID*>& choices,
 // DebugCmdInfo implementation
 //
 
-PQueue(DebugCmdInfo) g_DebugCmdInfos;
+PQueue<DebugCmdInfo> g_DebugCmdInfos;
 
 DebugCmdInfo::DebugCmdInfo(const DebugCmdInfo& info)
 : cmd(info.cmd), helpstring(0)

@@ -17,7 +17,7 @@ public:
 
 	/**
 	 * Imports Bro script Stmt usage information from file pointed to by
-	 * environment variable BRO_PROFILER_FILE.
+	 * environment variable ZEEK_PROFILER_FILE.
 	 *
 	 * @return: true if usage info was read, otherwise false.
 	 */
@@ -26,7 +26,7 @@ public:
 	/**
 	 * Combines usage stats from current run with any read from ReadStats(),
 	 * then writes information to file pointed to by environment variable
-	 * BRO_PROFILER_FILE.  If the value of that env. variable ends with
+	 * ZEEK_PROFILER_FILE.  If the value of that env. variable ends with
 	 * ".XXXXXX" (exactly 6 X's), then it is first passed through mkstemp
 	 * to get a unique file.
 	 *
@@ -59,7 +59,7 @@ private:
 	 * startup time and modified at shutdown time before writing back
 	 * to a file.
 	 */
-	map<pair<string, string>, uint64> usage_map;
+	map<pair<string, string>, uint64_t> usage_map;
 
 	/**
 	 * The character to use to delimit Brofiler output files.  Default is '\t'.

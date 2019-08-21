@@ -32,7 +32,7 @@ export {
 	option cert_tracking = LOCAL_HOSTS;
 
 	## Toggles between different implementations of this script.
-	## When true, use a Broker data store, else use a regular Bro set
+	## When true, use a Broker data store, else use a regular Zeek set
 	## with keys uniformly distributed over proxy nodes in cluster
 	## operation.
 	const use_cert_store = T &redef;
@@ -48,7 +48,7 @@ export {
 	global cert_store: Cluster::StoreInfo;
 
 	## The Broker topic name to use for :zeek:see:`Known::cert_store`.
-	const cert_store_name = "bro/known/certs" &redef;
+	const cert_store_name = "zeek/known/certs" &redef;
 
 	## The expiry interval of new entries in :zeek:see:`Known::cert_store`.
 	## This also changes the interval at which certs get logged.

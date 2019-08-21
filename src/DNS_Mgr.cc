@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -89,7 +89,7 @@ int DNS_Mgr_Request::MakeRequest(nb_dns_info* nb_dns)
 		return nb_dns_host_request2(nb_dns, host, fam, qtype, (void*) this, err) >= 0;
 	else
 		{
-		const uint32* bytes;
+		const uint32_t* bytes;
 		int len = addr.GetBytes(&bytes);
 		return nb_dns_addr_request2(nb_dns, (char*) bytes,
 				len == 1 ? AF_INET : AF_INET6, (void*) this, err) >= 0;
@@ -98,8 +98,8 @@ int DNS_Mgr_Request::MakeRequest(nb_dns_info* nb_dns)
 
 class DNS_Mapping {
 public:
-	DNS_Mapping(const char* host, struct hostent* h, uint32 ttl);
-	DNS_Mapping(const IPAddr& addr, struct hostent* h, uint32 ttl);
+	DNS_Mapping(const char* host, struct hostent* h, uint32_t ttl);
+	DNS_Mapping(const IPAddr& addr, struct hostent* h, uint32_t ttl);
 	DNS_Mapping(FILE* f);
 
 	int NoMapping() const		{ return no_mapping; }
@@ -147,7 +147,7 @@ protected:
 
 	char* req_host;
 	IPAddr req_addr;
-	uint32 req_ttl;
+	uint32_t req_ttl;
 
 	int num_names;
 	char** names;
@@ -176,7 +176,7 @@ static TableVal* empty_addr_set()
 	return new TableVal(s);
 	}
 
-DNS_Mapping::DNS_Mapping(const char* host, struct hostent* h, uint32 ttl)
+DNS_Mapping::DNS_Mapping(const char* host, struct hostent* h, uint32_t ttl)
 	{
 	Init(h);
 	req_host = copy_string(host);
@@ -186,7 +186,7 @@ DNS_Mapping::DNS_Mapping(const char* host, struct hostent* h, uint32 ttl)
 		names[0] = copy_string(host);
 	}
 
-DNS_Mapping::DNS_Mapping(const IPAddr& addr, struct hostent* h, uint32 ttl)
+DNS_Mapping::DNS_Mapping(const IPAddr& addr, struct hostent* h, uint32_t ttl)
 	{
 	Init(h);
 	req_addr = addr;
@@ -289,10 +289,13 @@ ListVal* DNS_Mapping::Addrs()
 
 TableVal* DNS_Mapping::AddrsSet() {
 	ListVal* l = Addrs();
-	if ( l )
-		return l->ConvertToSet();
-	else
+
+	if ( ! l )
 		return empty_addr_set();
+
+	auto rval = l->ConvertToSet();
+	Unref(l);
+	return rval;
 	}
 
 StringVal* DNS_Mapping::Host()
@@ -334,10 +337,10 @@ void DNS_Mapping::Init(struct hostent* h)
 		addrs = new IPAddr[num_addrs];
 		for ( int i = 0; i < num_addrs; ++i )
 			if ( h->h_addrtype == AF_INET )
-				addrs[i] = IPAddr(IPv4, (uint32*)h->h_addr_list[i],
+				addrs[i] = IPAddr(IPv4, (uint32_t*)h->h_addr_list[i],
 				                  IPAddr::Network);
 			else if ( h->h_addrtype == AF_INET6 )
-				addrs[i] = IPAddr(IPv6, (uint32*)h->h_addr_list[i],
+				addrs[i] = IPAddr(IPv6, (uint32_t*)h->h_addr_list[i],
 				                  IPAddr::Network);
 		}
 	else
@@ -389,6 +392,7 @@ DNS_Mgr::DNS_Mgr(DNS_MgrMode arg_mode)
 	successful = 0;
 	failed = 0;
 	nb_dns = nullptr;
+	next_timestamp = -1.0;
 	}
 
 DNS_Mgr::~DNS_Mgr()
@@ -410,7 +414,7 @@ void DNS_Mgr::Init()
 	// script-layer option to configure the DNS resolver as it may not be
 	// configured to the user's desired address at the time when we need to to
 	// the lookup.
-	auto dns_resolver = getenv("ZEEK_DNS_RESOLVER");
+	auto dns_resolver = zeekenv("ZEEK_DNS_RESOLVER");
 	auto dns_resolver_addr = dns_resolver ? IPAddr(dns_resolver) : IPAddr();
 	char err[NB_DNS_ERRSIZE];
 
@@ -469,7 +473,7 @@ void DNS_Mgr::InitPostScript()
 
 static TableVal* fake_name_lookup_result(const char* name)
 	{
-	uint32 hash[4];
+	uint32_t hash[4];
 	internal_md5(reinterpret_cast<const u_char*>(name), strlen(name),
 	    reinterpret_cast<u_char*>(hash));
 	ListVal* hv = new ListVal(TYPE_ADDR);
@@ -532,8 +536,8 @@ TableVal* DNS_Mgr::LookupHost(const char* name)
 	// Not found, or priming.
 	switch ( mode ) {
 	case DNS_PRIME:
-		requests.append(new DNS_Mgr_Request(name, AF_INET, false));
-		requests.append(new DNS_Mgr_Request(name, AF_INET6, false));
+		requests.push_back(new DNS_Mgr_Request(name, AF_INET, false));
+		requests.push_back(new DNS_Mgr_Request(name, AF_INET6, false));
 		return empty_addr_set();
 
 	case DNS_FORCE:
@@ -541,8 +545,8 @@ TableVal* DNS_Mgr::LookupHost(const char* name)
 		return 0;
 
 	case DNS_DEFAULT:
-		requests.append(new DNS_Mgr_Request(name, AF_INET, false));
-		requests.append(new DNS_Mgr_Request(name, AF_INET6, false));
+		requests.push_back(new DNS_Mgr_Request(name, AF_INET, false));
+		requests.push_back(new DNS_Mgr_Request(name, AF_INET6, false));
 		Resolve();
 		return LookupHost(name);
 
@@ -577,7 +581,7 @@ Val* DNS_Mgr::LookupAddr(const IPAddr& addr)
 	// Not found, or priming.
 	switch ( mode ) {
 	case DNS_PRIME:
-		requests.append(new DNS_Mgr_Request(addr));
+		requests.push_back(new DNS_Mgr_Request(addr));
 		return new StringVal("<none>");
 
 	case DNS_FORCE:
@@ -586,7 +590,7 @@ Val* DNS_Mgr::LookupAddr(const IPAddr& addr)
 		return 0;
 
 	case DNS_DEFAULT:
-		requests.append(new DNS_Mgr_Request(addr));
+		requests.push_back(new DNS_Mgr_Request(addr));
 		Resolve();
 		return LookupAddr(addr);
 
@@ -1249,8 +1253,17 @@ void DNS_Mgr::GetFds(iosource::FD_Set* read, iosource::FD_Set* write,
 
 double DNS_Mgr::NextTimestamp(double* network_time)
 	{
-	// This is kind of cheating ...
-	return asyncs_timeouts.size() ? timer_mgr->Time() : -1.0;
+	if ( asyncs_timeouts.empty() )
+		// No pending requests.
+		return -1.0;
+
+	if ( next_timestamp < 0 )
+		// Store the timestamp to help prevent starvation by some other
+		// IOSource always trying to use the same timestamp
+		// (assuming network_time does actually increase).
+		next_timestamp = timer_mgr->Time();
+
+	return next_timestamp;
 	}
 
 void DNS_Mgr::CheckAsyncAddrRequest(const IPAddr& addr, bool timeout)
@@ -1356,7 +1369,7 @@ void DNS_Mgr::CheckAsyncHostRequest(const char* host, bool timeout)
 
 void DNS_Mgr::Flush()
 	{
-	DoProcess(false);
+	DoProcess();
 
 	HostMap::iterator it;
 	for ( it = host_mappings.begin(); it != host_mappings.end(); ++it )
@@ -1378,10 +1391,11 @@ void DNS_Mgr::Flush()
 
 void DNS_Mgr::Process()
 	{
-	DoProcess(false);
+	DoProcess();
+	next_timestamp = -1.0;
 	}
 
-void DNS_Mgr::DoProcess(bool flush)
+void DNS_Mgr::DoProcess()
 	{
 	if ( ! nb_dns )
 		return;
@@ -1390,22 +1404,22 @@ void DNS_Mgr::DoProcess(bool flush)
 		{
 		AsyncRequest* req = asyncs_timeouts.top();
 
-		if ( req->time + DNS_TIMEOUT > current_time() || flush )
+		if ( req->time + DNS_TIMEOUT > current_time() )
 			break;
 
-		if ( req->IsAddrReq() )
-			CheckAsyncAddrRequest(req->host, true);
-		else if ( req->is_txt )
-			CheckAsyncTextRequest(req->name.c_str(), true);
-		else
-			CheckAsyncHostRequest(req->name.c_str(), true);
+		if ( ! req->processed )
+			{
+			if ( req->IsAddrReq() )
+				CheckAsyncAddrRequest(req->host, true);
+			else if ( req->is_txt )
+				CheckAsyncTextRequest(req->name.c_str(), true);
+			else
+				CheckAsyncHostRequest(req->name.c_str(), true);
+			}
 
 		asyncs_timeouts.pop();
 		delete req;
 		}
-
-	if ( asyncs_addrs.size() == 0 && asyncs_names.size() == 0 && asyncs_texts.size() == 0 )
-		return;
 
 	if ( AnswerAvailable(0) <= 0 )
 		return;

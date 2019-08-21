@@ -126,8 +126,7 @@ public:
 
 // A stack of input buffers we're scanning.  file_stack[len-1] is the
 // top of the stack.
-declare(PList,FileInfo);
-static PList(FileInfo) file_stack;
+static PList<FileInfo> file_stack;
 
 #define RET_CONST(v) \
 	{ \
@@ -300,26 +299,6 @@ when	return TOK_WHEN;
 &redef		return TOK_ATTR_REDEF;
 &write_expire	return TOK_ATTR_EXPIRE_WRITE;
 
-&encrypt {
-	deprecated_attr(yytext);
-	return TOK_ATTR_ENCRYPT;
-	}
-
-&mergeable {
-	deprecated_attr(yytext);
-	return TOK_ATTR_MERGEABLE;
-	}
-
-&rotate_interval {
-	deprecated_attr(yytext);
-	return TOK_ATTR_ROTATE_INTERVAL;
-	}
-
-&rotate_size {
-	deprecated_attr(yytext);
-	return TOK_ATTR_ROTATE_SIZE;
-	}
-
 @deprecated.* {
 	auto num_files = file_stack.length();
 	auto comment = skip_whitespace(yytext + 11);
@@ -490,7 +469,7 @@ F	RET_CONST(val_mgr->GetFalse())
 {FLOAT}		RET_CONST(new Val(atof(yytext), TYPE_DOUBLE))
 
 {D}"/tcp"	{
-		uint32 p = atoi(yytext);
+		uint32_t p = atoi(yytext);
 		if ( p > 65535 )
 			{
 			reporter->Error("bad port number - %s", yytext);
@@ -499,7 +478,7 @@ F	RET_CONST(val_mgr->GetFalse())
 		RET_CONST(val_mgr->GetPort(p, TRANSPORT_TCP))
 		}
 {D}"/udp"	{
-		uint32 p = atoi(yytext);
+		uint32_t p = atoi(yytext);
 		if ( p > 65535 )
 			{
 			reporter->Error("bad port number - %s", yytext);
@@ -508,7 +487,7 @@ F	RET_CONST(val_mgr->GetFalse())
 		RET_CONST(val_mgr->GetPort(p, TRANSPORT_UDP))
 		}
 {D}"/icmp"	{
-		uint32 p = atoi(yytext);
+		uint32_t p = atoi(yytext);
 		if ( p > 255 )
 			{
 			reporter->Error("bad port number - %s", yytext);
@@ -517,7 +496,7 @@ F	RET_CONST(val_mgr->GetFalse())
 		RET_CONST(val_mgr->GetPort(p, TRANSPORT_ICMP))
 		}
 {D}"/unknown"	{
-		uint32 p = atoi(yytext);
+		uint32_t p = atoi(yytext);
 		if ( p > 255 )
 			{
 			reporter->Error("bad port number - %s", yytext);
@@ -692,7 +671,7 @@ static int load_files(const char* orig_file)
 		// Add the filename to the file mapping table (Debug.h).
 		Filemap* map = new Filemap;
 		HashKey* key = new HashKey(file_path.c_str());
-		g_dbgfilemaps.Insert(key, map);
+		g_dbgfilemaps.emplace(file_path, map);
 		LoadPolicyFileText(file_path.c_str());
 		}
 
@@ -703,11 +682,11 @@ static int load_files(const char* orig_file)
 	// was done when we're finished processing it.
 	if ( ! did_module_restore )
 		{
-		file_stack.append(new FileInfo(current_module));
+		file_stack.push_back(new FileInfo(current_module));
 		did_module_restore = true;
 		}
 	else
-		file_stack.append(new FileInfo);
+		file_stack.push_back(new FileInfo);
 
 	zeekygen_mgr->Script(file_path);
 
@@ -777,7 +756,7 @@ void do_atif(Expr* expr)
 
 	if ( ! val->AsBool() )
 		{
-		if_stack.append(current_depth);
+		if_stack.push_back(current_depth);
 		BEGIN(IGNORE);
 		}
 	}
@@ -790,7 +769,7 @@ void do_atifdef(const char* id)
 
 	if ( ! (i = lookup_ID(id, current_module.c_str())) )
 		{
-		if_stack.append(current_depth);
+		if_stack.push_back(current_depth);
 		BEGIN(IGNORE);
 		}
 
@@ -805,7 +784,7 @@ void do_atifndef(const char *id)
 
 	if ( (i = lookup_ID(id, current_module.c_str())) )
 		{
-		if_stack.append(current_depth);
+		if_stack.push_back(current_depth);
 		BEGIN(IGNORE);
 		}
 
@@ -817,17 +796,17 @@ void do_atelse()
 	if ( current_depth == 0 )
 		reporter->Error("@else without @if...");
 
-	if ( if_stack.length() && current_depth > if_stack.last() )
+	if ( ! if_stack.empty() && current_depth > if_stack.back() )
 		return;
 
 	if ( YY_START == INITIAL )
 		{
-		if_stack.append(current_depth);
+		if_stack.push_back(current_depth);
 		BEGIN(IGNORE);
 		}
 	else
 		{
-		if_stack.get();
+		if_stack.pop_back();
 		BEGIN(INITIAL);
 		}
 	}
@@ -837,10 +816,10 @@ void do_atendif()
 	if ( current_depth == 0 )
 		reporter->Error("unbalanced @if... @endif");
 
-	if ( current_depth == if_stack.last() )
+	if ( current_depth == if_stack.back() )
 		{
 		BEGIN(INITIAL);
-		if_stack.get();
+		if_stack.pop_back();
 		}
 
 	--current_depth;
@@ -860,7 +839,7 @@ void add_essential_input_file(const char* file)
 	if ( ! filename )
 		(void) load_files(file);
 	else
-		essential_input_files.append(copy_string(file));
+		essential_input_files.push_back(copy_string(file));
 	}
 
 void add_input_file(const char* file)
@@ -871,7 +850,7 @@ void add_input_file(const char* file)
 	if ( ! filename )
 		(void) load_files(file);
 	else
-		input_files.append(copy_string(file));
+		input_files.push_back(copy_string(file));
 	}
 
 void add_input_file_at_front(const char* file)
@@ -882,7 +861,7 @@ void add_input_file_at_front(const char* file)
 	if ( ! filename )
 		(void) load_files(file);
 	else
-		input_files.insert(copy_string(file));
+		input_files.push_front(copy_string(file));
 	}
 
 void add_to_name_list(char* s, char delim, name_list& nl)
@@ -893,7 +872,7 @@ void add_to_name_list(char* s, char delim, name_list& nl)
 		if ( s_delim )
 			*s_delim = 0;
 
-		nl.append(copy_string(s));
+		nl.push_back(copy_string(s));
 
 		if ( s_delim )
 			s = s_delim + 1;
@@ -921,7 +900,8 @@ int yywrap()
 
 	yy_delete_buffer(YY_CURRENT_BUFFER);
 
-	delete file_stack.remove_nth(file_stack.length() - 1);
+	if ( file_stack.length() > 0 )
+		delete file_stack.remove_nth(file_stack.length() - 1);
 
 	if ( YY_CURRENT_BUFFER )
 		// There's more on the stack to scan.
@@ -947,8 +927,8 @@ int yywrap()
 		}
 
 	// For each file scanned so far, and for each @prefix, look for a
-	// prefixed and flattened version of the loaded file in BROPATH. The
-	// flattening involves taking the path in BROPATH in which the
+	// prefixed and flattened version of the loaded file in ZEEKPATH. The
+	// flattening involves taking the path in ZEEKPATH in which the
 	// scanned file lives and replacing '/' path separators with a '.' If
 	// the scanned file is "__load__.zeek", that part of the flattened
 	// file name is discarded. If the prefix is non-empty, it gets placed

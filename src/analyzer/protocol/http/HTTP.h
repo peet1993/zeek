@@ -168,7 +168,7 @@ public:
 	// Overriden from Analyzer.
 	void Done() override;
 	void DeliverStream(int len, const u_char* data, bool orig) override;
-	void Undelivered(uint64 seq, int len, bool orig) override;
+	void Undelivered(uint64_t seq, int len, bool orig) override;
 
 	// Overriden from tcp::TCP_ApplicationAnalyzer
 	void EndpointEOF(bool is_orig) override;
@@ -220,7 +220,6 @@ protected:
 
 	const BroString* UnansweredRequestMethod();
 
-	void ParseVersion(data_chunk_t ver, const IPAddr& host, bool user_agent);
 	int HTTP_ReplyCode(const char* code_str);
 	int ExpectReplyMessageBody();
 

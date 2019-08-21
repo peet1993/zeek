@@ -1,6 +1,9 @@
 #include "Data.h"
 #include "File.h"
 #include "broker/data.bif.h"
+
+#include <broker/error.hh>
+
 #include <caf/stream_serializer.hpp>
 #include <caf/stream_deserializer.hpp>
 #include <caf/streambuf.hpp>
@@ -97,43 +100,9 @@ struct val_converter {
 			auto file = BroFile::GetFile(a.data());
 
 			if ( file )
-				{
-				Ref(file);
 				return new Val(file);
-				}
 
 			return nullptr;
-			}
-		case TYPE_FUNC:
-			{
-			auto id = global_scope()->Lookup(a.data());
-
-			if ( ! id )
-				return nullptr;
-
-			auto rval = id->ID_Val();
-
-			if ( ! rval )
-				return nullptr;
-
-			auto t = rval->Type();
-
-			if ( ! t )
-				return nullptr;
-
-			if ( t->Tag() != TYPE_FUNC )
-				return nullptr;
-
-			return rval->Ref();
-			}
-		case TYPE_OPAQUE:
-			{
-			SerializationFormat* form = new BinarySerializationFormat();
-			form->StartRead(a.data(), a.size());
-			CloneSerializer ss(form);
-			UnserialInfo uinfo(&ss);
-			uinfo.cache = false;
-			return Val::Unserialize(&uinfo, type->Tag());
 			}
 		default:
 			return nullptr;
@@ -373,6 +342,46 @@ struct val_converter {
 
 			return rval;
 			}
+		else if ( type->Tag() == TYPE_FUNC )
+			{
+			if ( a.size() < 1 || a.size() > 2 )
+				return nullptr;
+
+			auto name = broker::get_if<std::string>(a[0]);
+			if ( ! name )
+				return nullptr;
+
+			auto id = global_scope()->Lookup(*name);
+			if ( ! id )
+				return nullptr;
+
+			auto rval = id->ID_Val();
+			if ( ! rval )
+				return nullptr;
+
+			auto t = rval->Type();
+			if ( ! t )
+				return nullptr;
+
+			if ( t->Tag() != TYPE_FUNC )
+				return nullptr;
+
+			if ( a.size() == 2 ) // We have a closure.
+				{
+				auto frame = broker::get_if<broker::vector>(a[1]);
+				if ( ! frame )
+					return nullptr;
+
+				BroFunc* b = dynamic_cast<BroFunc*>(rval->AsFunc());
+				if ( ! b )
+					return nullptr;
+
+				if ( ! b->UpdateClosure(*frame) )
+					return nullptr;
+				}
+
+			return rval->Ref();
+			}
 		else if ( type->Tag() == TYPE_RECORD )
 			{
 			auto rt = type->AsRecordType();
@@ -434,6 +443,8 @@ struct val_converter {
 			auto rval = new PatternVal(re);
 			return rval;
 			}
+		else if ( type->Tag() == TYPE_OPAQUE )
+			return OpaqueVal::Unserialize(a);
 
 		return nullptr;
 		}
@@ -486,38 +497,6 @@ struct type_checker {
 			return true;
 		case TYPE_FILE:
 			return true;
-		case TYPE_FUNC:
-			{
-			auto id = global_scope()->Lookup(a.data());
-
-			if ( ! id )
-				return false;
-
-			auto rval = id->ID_Val();
-
-			if ( ! rval )
-				return false;
-
-			auto t = rval->Type();
-
-			if ( ! t )
-				return false;
-
-			if ( t->Tag() != TYPE_FUNC )
-				return false;
-
-			return true;
-			}
-		case TYPE_OPAQUE:
-			{
-			// TODO
-			SerializationFormat* form = new BinarySerializationFormat();
-			form->StartRead(a.data(), a.size());
-			CloneSerializer ss(form);
-			UnserialInfo uinfo(&ss);
-			uinfo.cache = false;
-			return Val::Unserialize(&uinfo, type->Tag());
-			}
 		default:
 			return false;
 		}
@@ -715,6 +694,32 @@ struct type_checker {
 
 			return true;
 			}
+		else if ( type->Tag() == TYPE_FUNC )
+			{
+			if ( a.size() < 1 || a.size() > 2 )
+				return false;
+
+			auto name = broker::get_if<std::string>(a[0]);
+			if ( ! name )
+				return false;
+
+			auto id = global_scope()->Lookup(*name);
+			if ( ! id )
+				return false;
+
+			auto rval = id->ID_Val();
+			if ( ! rval )
+				return false;
+
+			auto t = rval->Type();
+			if ( ! t )
+				return false;
+
+			if ( t->Tag() != TYPE_FUNC )
+				return false;
+
+			return true;
+			}
 		else if ( type->Tag() == TYPE_RECORD )
 			{
 			auto rt = type->AsRecordType();
@@ -763,6 +768,15 @@ struct type_checker {
 				}
 
 			return true;
+			}
+		else if ( type->Tag() == TYPE_OPAQUE )
+			{
+			// TODO: Could avoid doing the full unserialization here
+			// and just check if the type is a correct match.
+			auto ov = OpaqueVal::Unserialize(a);
+			auto rval = ov != nullptr;
+			Unref(ov);
+			return rval;
 			}
 
 		return false;
@@ -826,13 +840,13 @@ broker::expected<broker::data> bro_broker::val_to_data(Val* v)
 		return {v->AsDouble()};
 	case TYPE_TIME:
 		{
-	  auto secs = broker::fractional_seconds{v->AsTime()};
-	  auto since_epoch = std::chrono::duration_cast<broker::timespan>(secs);
+		auto secs = broker::fractional_seconds{v->AsTime()};
+		auto since_epoch = std::chrono::duration_cast<broker::timespan>(secs);
 		return {broker::timestamp{since_epoch}};
 		}
 	case TYPE_INTERVAL:
 		{
-	  auto secs = broker::fractional_seconds{v->AsInterval()};
+		auto secs = broker::fractional_seconds{v->AsInterval()};
 		return {std::chrono::duration_cast<broker::timespan>(secs)};
 		}
 	case TYPE_ENUM:
@@ -849,7 +863,33 @@ broker::expected<broker::data> bro_broker::val_to_data(Val* v)
 	case TYPE_FILE:
 		return {string(v->AsFile()->Name())};
 	case TYPE_FUNC:
-		return {string(v->AsFunc()->Name())};
+		{
+		Func* f = v->AsFunc();
+		std::string name(f->Name());
+
+		broker::vector rval;
+		rval.push_back(name);
+
+		if ( name.find("lambda_<") == 0 )
+			{
+			// Only BroFuncs have closures.
+			if ( auto b = dynamic_cast<BroFunc*>(f) )
+				{
+				auto bc = b->SerializeClosure();
+				if ( ! bc )
+					return broker::ec::invalid_data;
+
+				rval.emplace_back(std::move(*bc));
+				}
+			else
+				{
+				reporter->InternalWarning("Closure with non-BroFunc");
+				return broker::ec::invalid_data;
+				}
+			}
+
+		return {std::move(rval)};
+		}
 	case TYPE_TABLE:
 		{
 		auto is_set = v->Type()->IsSet();
@@ -980,21 +1020,14 @@ broker::expected<broker::data> bro_broker::val_to_data(Val* v)
 		}
 	case TYPE_OPAQUE:
 		{
-		SerializationFormat* form = new BinarySerializationFormat();
-		form->StartWrite();
-		CloneSerializer ss(form);
-		SerialInfo sinfo(&ss);
-		sinfo.cache = false;
-		sinfo.include_locations = false;
+		auto c = v->AsOpaqueVal()->Serialize();
+		if ( ! c )
+			{
+			reporter->Error("unsupported opaque type for serialization");
+			break;
+			}
 
-		if ( ! v->Serialize(&sinfo) )
-			return broker::ec::invalid_data;
-
-		char* data;
-		uint32 len = form->EndWrite(&data);
-		string rval(data, len);
-		free(data);
-		return {std::move(rval)};
+		return {c};
 		}
 	default:
 		reporter->Error("unsupported Broker::Data type: %s",
@@ -1010,8 +1043,10 @@ RecordVal* bro_broker::make_data_val(Val* v)
 	auto rval = new RecordVal(BifType::Record::Broker::Data);
 	auto data = val_to_data(v);
 
-	if ( data )
+	if  ( data )
 		rval->Assign(0, new DataVal(move(*data)));
+	else
+		reporter->Warning("did not get a value from val_to_data");
 
 	return rval;
 	}
@@ -1131,39 +1166,120 @@ Val* bro_broker::DataVal::castTo(BroType* t)
 	return data_to_val(data, t);
 	}
 
-IMPLEMENT_SERIAL(bro_broker::DataVal, SER_COMM_DATA_VAL);
+IMPLEMENT_OPAQUE_VALUE(bro_broker::DataVal)
 
-bool bro_broker::DataVal::DoSerialize(SerialInfo* info) const
+broker::expected<broker::data> bro_broker::DataVal::DoSerialize() const
 	{
-	DO_SERIALIZE(SER_COMM_DATA_VAL, OpaqueVal);
+	return data;
+	}
 
-	std::string buffer;
-	caf::containerbuf<std::string> sb{buffer};
-	caf::stream_serializer<caf::containerbuf<std::string>&> serializer{sb};
-	serializer << data;
-
-	if ( ! SERIALIZE_STR(buffer.data(), buffer.size()) )
-		return false;
-
+bool bro_broker::DataVal::DoUnserialize(const broker::data& data_)
+	{
+	data = data_;
 	return true;
 	}
 
-bool bro_broker::DataVal::DoUnserialize(UnserialInfo* info)
+IMPLEMENT_OPAQUE_VALUE(bro_broker::SetIterator)
+
+broker::expected<broker::data> bro_broker::SetIterator::DoSerialize() const
 	{
-	DO_UNSERIALIZE(OpaqueVal);
+	return broker::vector{dat, *it};
+	}
 
-	const char* serial;
-	int len;
-
-	if ( ! UNSERIALIZE_STR(&serial, &len) )
+bool bro_broker::SetIterator::DoUnserialize(const broker::data& data)
+	{
+	auto v = caf::get_if<broker::vector>(&data);
+	if ( ! (v && v->size() == 2) )
 		return false;
 
-	caf::arraybuf<char> sb{const_cast<char*>(serial), // will not write
-	                       static_cast<size_t>(len)};
-	caf::stream_deserializer<caf::arraybuf<char>&> deserializer{sb};
-	deserializer >> data;
+	auto x = caf::get_if<broker::set>(&(*v)[0]);
 
-	delete [] serial;
+	// We set the iterator by finding the element it used to point to.
+	// This is not perfect, as there's no guarantee that the restored
+	// container will list the elements in the same order. But it's as
+	// good as we can do, and it should generally work out.
+	if( x->find((*v)[1]) == x->end() )
+		return false;
+
+	dat = *x;
+	it = dat.find((*v)[1]);
+	return true;
+	}
+
+IMPLEMENT_OPAQUE_VALUE(bro_broker::TableIterator)
+
+broker::expected<broker::data> bro_broker::TableIterator::DoSerialize() const
+	{
+	return broker::vector{dat, it->first};
+	}
+
+bool bro_broker::TableIterator::DoUnserialize(const broker::data& data)
+	{
+	auto v = caf::get_if<broker::vector>(&data);
+	if ( ! (v && v->size() == 2) )
+		return false;
+
+	auto x = caf::get_if<broker::table>(&(*v)[0]);
+
+	// We set the iterator by finding the element it used to point to.
+	// This is not perfect, as there's no guarantee that the restored
+	// container will list the elements in the same order. But it's as
+	// good as we can do, and it should generally work out.
+	if( x->find((*v)[1]) == x->end() )
+		return false;
+
+	dat = *x;
+	it = dat.find((*v)[1]);
+	return true;
+	}
+
+IMPLEMENT_OPAQUE_VALUE(bro_broker::VectorIterator)
+
+broker::expected<broker::data> bro_broker::VectorIterator::DoSerialize() const
+	{
+	broker::integer difference = it - dat.begin();
+	return broker::vector{dat, difference};
+	}
+
+bool bro_broker::VectorIterator::DoUnserialize(const broker::data& data)
+	{
+	auto v = caf::get_if<broker::vector>(&data);
+	if ( ! (v && v->size() == 2) )
+		return false;
+
+	auto x = caf::get_if<broker::vector>(&(*v)[0]);
+	auto y = caf::get_if<broker::integer>(&(*v)[1]);
+
+	if ( ! (x && y) )
+		return false;
+
+	dat = *x;
+	it = dat.begin() + *y;
+	return true;
+	}
+
+IMPLEMENT_OPAQUE_VALUE(bro_broker::RecordIterator)
+
+broker::expected<broker::data> bro_broker::RecordIterator::DoSerialize() const
+	{
+	broker::integer difference = it - dat.begin();
+	return broker::vector{dat, difference};
+	}
+
+bool bro_broker::RecordIterator::DoUnserialize(const broker::data& data)
+	{
+	auto v = caf::get_if<broker::vector>(&data);
+	if ( ! (v && v->size() == 2) )
+		return false;
+
+	auto x = caf::get_if<broker::vector>(&(*v)[0]);
+	auto y = caf::get_if<broker::integer>(&(*v)[1]);
+
+	if ( ! (x && y) )
+		return false;
+
+	dat = *x;
+	it = dat.begin() + *y;
 	return true;
 	}
 

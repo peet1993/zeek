@@ -26,12 +26,25 @@ export {
 	## This option is also available as a per-filter ``$config`` option.
 	const use_json = F &redef;
 
+	## If true, valid UTF-8 sequences will pass through unescaped and be
+	## written into logs.
+	##
+	## This option is also available as a per-filter ``$config`` option.
+	const enable_utf_8 = F &redef;
+
 	## Define the gzip level to compress the logs.  If 0, then no gzip
 	## compression is performed. Enabling compression also changes
-	## the log file name extension to include ".gz".
+	## the log file name extension to include the value of
+	## :zeek:see:`LogAscii::gzip_file_extension`.
 	##
 	## This option is also available as a per-filter ``$config`` option.
 	const gzip_level = 0 &redef;
+
+	## Define the file extension used when compressing log files when
+	## they are created with the :zeek:see:`LogAscii::gzip_level` option.
+	##
+	## This option is also available as a per-filter ``$config`` option.
+	const gzip_file_extension = "gz" &redef;
 
 	## Format of timestamps when writing out JSON. By default, the JSON
 	## formatter will use double values for timestamps which represent the
@@ -81,7 +94,7 @@ function default_rotation_postprocessor_func(info: Log::RotationInfo) : bool
 	{
 	# If the filename has a ".gz" extension, then keep it.
 	local gz = info$fname[-3:] == ".gz" ? ".gz" : "";
-	local bls = getenv("BRO_LOG_SUFFIX");
+	local bls = getenv("ZEEK_LOG_SUFFIX");
 
 	if ( bls == "" )
 		bls = "log";

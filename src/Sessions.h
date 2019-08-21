@@ -17,12 +17,8 @@
 
 class EncapsulationStack;
 class Connection;
-class OSFingerprint;
 class ConnCompressor;
 struct ConnID;
-
-declare(PDict,Connection);
-declare(PDict,FragReassembler);
 
 class Discarder;
 class PacketFilter;
@@ -33,19 +29,19 @@ namespace analyzer { namespace arp { class ARP_Analyzer; } }
 struct SessionStats {
 	int num_TCP_conns;
 	int max_TCP_conns;
-	uint64 cumulative_TCP_conns;
+	uint64_t cumulative_TCP_conns;
 
 	int num_UDP_conns;
 	int max_UDP_conns;
-	uint64 cumulative_UDP_conns;
+	uint64_t cumulative_UDP_conns;
 
 	int num_ICMP_conns;
 	int max_ICMP_conns;
-	uint64 cumulative_ICMP_conns;
+	uint64_t cumulative_ICMP_conns;
 
 	int num_fragments;
 	int max_fragments;
-	uint64 num_packets;
+	uint64_t num_packets;
 };
 
 // Drains and deletes a timer manager if it hasn't seen any advances
@@ -76,14 +72,6 @@ public:
 	// some missing fragments.
 	FragReassembler* NextFragment(double t, const IP_Hdr* ip,
 				const u_char* pkt);
-
-	int Get_OS_From_SYN(struct os_type* retval,
-			uint16 tot, uint8 DF_flag, uint8 TTL, uint16 WSS,
-			uint8 ocnt, uint8* op, uint16 MSS, uint8 win_scale,
-			uint32 tstamp, /* uint8 TOS, */ uint32 quirks,
-			uint8 ECN) const;
-
-	bool CompareWithPreviousOSMatch(const IPAddr& addr, int id) const;
 
 	// Looks up the connection referred to by the given Val,
 	// which should be a conn_id record.  Returns nil if there's
@@ -185,7 +173,7 @@ protected:
 	friend class IPTunnelTimer;
 
 	Connection* NewConn(HashKey* k, double t, const ConnID* id,
-			const u_char* data, int proto, uint32 flow_label,
+			const u_char* data, int proto, uint32_t flow_label,
 			const Packet* pkt, const EncapsulationStack* encapsulation);
 
 	// Check whether the tag of the current packet is consistent with
@@ -201,7 +189,7 @@ protected:
 	// generally a likely server port, false otherwise.
 	//
 	// Note, port is in host order.
-	bool IsLikelyServerPort(uint32 port,
+	bool IsLikelyServerPort(uint32_t port,
 				TransportProto transport_proto) const;
 
 	// Upon seeing the first packet of a connection, checks whether
@@ -209,9 +197,9 @@ protected:
 	// connections), and, if yes, whether we should flip the roles of
 	// originator and responder (based on known ports or such).
 	// Use tcp_flags=0 for non-TCP.
-	bool WantConnection(uint16 src_port, uint16 dest_port,
+	bool WantConnection(uint16_t src_port, uint16_t dest_port,
 				TransportProto transport_proto,
-				uint8 tcp_flags, bool& flip_roles);
+				uint8_t tcp_flags, bool& flip_roles);
 
 	// Record the given packet (if a dumper is active).  If len=0
 	// then the whole packet is recorded, otherwise just the first
@@ -221,14 +209,14 @@ protected:
 	// For a given protocol, checks whether the header's length as derived
 	// from lower-level headers or the length actually captured is less
 	// than that protocol's minimum header size.
-	bool CheckHeaderTrunc(int proto, uint32 len, uint32 caplen,
+	bool CheckHeaderTrunc(int proto, uint32_t len, uint32_t caplen,
 			      const Packet *pkt, const EncapsulationStack* encap);
 
 	CompositeHash* ch;
-	PDict(Connection) tcp_conns;
-	PDict(Connection) udp_conns;
-	PDict(Connection) icmp_conns;
-	PDict(FragReassembler) fragments;
+	PDict<Connection> tcp_conns;
+	PDict<Connection> udp_conns;
+	PDict<Connection> icmp_conns;
+	PDict<FragReassembler> fragments;
 
 	typedef pair<IPAddr, IPAddr> IPPair;
 	typedef pair<EncapsulatingConn, double> TunnelActivity;
@@ -240,10 +228,8 @@ protected:
 	analyzer::stepping_stone::SteppingStoneManager* stp_manager;
 	Discarder* discarder;
 	PacketFilter* packet_filter;
-	OSFingerprint* SYN_OS_Fingerprinter;
-	int build_backdoor_analyzer;
 	int dump_this_packet;	// if true, current packet should be recorded
-	uint64 num_packets_processed;
+	uint64_t num_packets_processed;
 	PacketProfiler* pkt_profiler;
 
 	// We may use independent timer managers for different sets of related

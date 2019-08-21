@@ -3,10 +3,10 @@
 # chance of being off by one if someone changes it).
 #
 # @TEST-REQUIRES: which sqlite3
-# @TEST-REQUIRES: has-writer Bro::SQLiteWriter
+# @TEST-REQUIRES: has-writer Zeek::SQLiteWriter
 # @TEST-GROUP: sqlite
 #
-# @TEST-EXEC: bro -b %INPUT
+# @TEST-EXEC: zeek -b %INPUT
 # @TEST-EXEC: sqlite3 ssh.sqlite 'select * from ssh' > ssh.select
 # @TEST-EXEC: btest-diff ssh.select
 #

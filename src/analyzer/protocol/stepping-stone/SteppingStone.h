@@ -13,16 +13,13 @@ namespace analyzer { namespace stepping_stone {
 class SteppingStoneEndpoint;
 class SteppingStoneManager;
 
-declare(PQueue,SteppingStoneEndpoint);
-declare(PDict,SteppingStoneEndpoint);
-
 class SteppingStoneEndpoint : public BroObj {
 public:
 	SteppingStoneEndpoint(tcp::TCP_Endpoint* e, SteppingStoneManager* m);
 	~SteppingStoneEndpoint() override;
 	void Done();
 
-	int DataSent(double t, uint64 seq, int len, int caplen, const u_char* data,
+	int DataSent(double t, uint64_t seq, int len, int caplen, const u_char* data,
 		     const IP_Hdr* ip, const struct tcphdr* tp);
 
 protected:
@@ -30,7 +27,7 @@ protected:
 	void CreateEndpEvent(int is_orig);
 
 	tcp::TCP_Endpoint* endp;
-	uint64 stp_max_top_seq;
+	uint64_t stp_max_top_seq;
 	double stp_last_time;
 	double stp_resume_time;
 	SteppingStoneManager* stp_manager;
@@ -40,9 +37,8 @@ protected:
 	// removing correlated endpoint pairs in Bro, since there is
 	// no LOOP in Bro language.
 	int stp_id;
-	HashKey* stp_key;
-	PDict(SteppingStoneEndpoint) stp_inbound_endps;
-	PDict(SteppingStoneEndpoint) stp_outbound_endps;
+	std::map<int, SteppingStoneEndpoint*> stp_inbound_endps;
+	std::map<int, SteppingStoneEndpoint*> stp_outbound_endps;
 };
 
 class SteppingStone_Analyzer : public tcp::TCP_ApplicationAnalyzer {
@@ -60,7 +56,7 @@ protected:
 	// We support both packet and stream input and can be put in place even
 	// if the TCP analyzer is not yet reassebmling.
 	void DeliverPacket(int len, const u_char* data, bool is_orig,
-					uint64 seq, const IP_Hdr* ip, int caplen) override;
+					uint64_t seq, const IP_Hdr* ip, int caplen) override;
 	void DeliverStream(int len, const u_char* data, bool is_orig) override;
 
 	int orig_stream_pos;
@@ -76,14 +72,14 @@ class SteppingStoneManager {
 public:
 	SteppingStoneManager()		{ endp_cnt = 0; }
 
-	PQueue(SteppingStoneEndpoint)& OrderedEndpoints()
+	PQueue<SteppingStoneEndpoint>& OrderedEndpoints()
 		{ return ordered_endps; }
 
 	// Use postfix ++, since the first ID needs to be even.
 	int NextID()			{ return endp_cnt++; }
 
 protected:
-	PQueue(SteppingStoneEndpoint) ordered_endps;
+	PQueue<SteppingStoneEndpoint> ordered_endps;
 	int endp_cnt;
 };
 

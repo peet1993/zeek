@@ -1,9 +1,19 @@
-##! Turns on profiling of Bro resource consumption.
+##! Turns on profiling of Zeek resource consumption.
 
 module Profiling;
 
+function log_suffix(): string
+	{
+	local rval = getenv("ZEEK_LOG_SUFFIX");
+
+	if ( rval == "" )
+		return "log";
+
+	return rval;
+	}
+
 ## Set the profiling output file.
-redef profiling_file = open_log_file("prof");
+redef profiling_file = open(fmt("prof.%s", Profiling::log_suffix()));
 
 ## Set the cheap profiling interval.
 redef profiling_interval = 15 secs;

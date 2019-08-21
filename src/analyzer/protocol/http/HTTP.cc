@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -53,6 +53,9 @@ HTTP_Entity::HTTP_Entity(HTTP_Message *arg_message, MIME_Entity* parent_entity, 
 	offset = 0;
 	instance_length = -1; // unspecified
 	send_size = true;
+	// Always override what MIME_Entity set for want_all_headers: HTTP doesn't
+	// raise the generic MIME events, but rather it's own specific ones.
+	want_all_headers = (bool)http_all_headers;
 	}
 
 void HTTP_Entity::EndOfData()
@@ -762,7 +765,10 @@ void HTTP_Message::SubmitAllHeaders(mime::MIME_HeaderList& hlist)
 
 void HTTP_Message::SubmitTrailingHeaders(mime::MIME_HeaderList& /* hlist */)
 	{
-	// Do nothing for now.
+	// Do nothing for now.  Note that if this ever changes do something
+	// which relies on the header list argument, that's currently not
+	// populated unless the http_all_headers or mime_all_headers events
+	// are being used (so you may need to change that, too).
 	}
 
 void HTTP_Message::SubmitData(int len, const char* buf)
@@ -1091,7 +1097,7 @@ void HTTP_Analyzer::DeliverStream(int len, const u_char* data, bool is_orig)
 		}
 	}
 
-void HTTP_Analyzer::Undelivered(uint64 seq, int len, bool is_orig)
+void HTTP_Analyzer::Undelivered(uint64_t seq, int len, bool is_orig)
 	{
 	tcp::TCP_ApplicationAnalyzer::Undelivered(seq, len, is_orig);
 
@@ -1640,17 +1646,6 @@ int HTTP_Analyzer::ExpectReplyMessageBody()
 
 void HTTP_Analyzer::HTTP_Header(int is_orig, mime::MIME_Header* h)
 	{
-#if 0
-	// ### Only call ParseVersion if we're tracking versions:
-	if ( istrequal(h->get_name(), "server") )
-		ParseVersion(h->get_value(),
-				(is_orig ? Conn()->OrigAddr() : Conn()->RespAddr()), false);
-
-	else if ( istrequal(h->get_name(), "user-agent") )
-		ParseVersion(h->get_value(),
-				(is_orig ? Conn()->OrigAddr() : Conn()->RespAddr()), true);
-#endif
-
 	// To be "liberal", we only look at "keep-alive" on the client
 	// side, and if seen assume the connection to be persistent.
 	// This seems fairly safe - at worst, the client does indeed
@@ -1699,127 +1694,6 @@ void HTTP_Analyzer::HTTP_Header(int is_orig, mime::MIME_Header* h)
 			mime::new_string_val(h->get_name())->ToUpper(),
 			mime::new_string_val(h->get_value()),
 		});
-		}
-	}
-
-void HTTP_Analyzer::ParseVersion(data_chunk_t ver, const IPAddr& host,
-				bool user_agent)
-	{
-	int len = ver.length;
-	const char* data = ver.data;
-
-	if ( software_unparsed_version_found )
-		Conn()->UnparsedVersionFoundEvent(host, data, len, this);
-
-	// The RFC defines:
-	//
-	//	product		= token ["/" product-version]
-	//	product-version = token
-	//	Server		= "Server" ":" 1*( product | comment )
-
-	int offset;
-	data_chunk_t product, product_version;
-	int num_version = 0;
-
-	while ( len > 0 )
-		{
-		// Skip white space.
-		while ( len && mime::is_lws(*data) )
-			{
-			++data;
-			--len;
-			}
-
-		// See if a comment is coming next. For User-Agent,
-		// we parse it, too.
-		if ( user_agent && len && *data == '(' )
-			{
-			// Find end of comment.
-			const char* data_start = data;
-			const char* eoc =
-				data + mime::MIME_skip_lws_comments(len, data);
-
-			// Split into parts.
-			// (This may get confused by nested comments,
-			// but we ignore this for now.)
-			const char* eot;
-			++data;
-			while ( 1 )
-				{
-				// Eat spaces.
-				while ( data < eoc && mime::is_lws(*data) )
-					++data;
-
-				// Find end of token.
-				for ( eot = data;
-				      eot < eoc && *eot != ';' && *eot != ')';
-				      ++eot )
-					;
-
-				if ( eot == eoc )
-					break;
-
-				// Delete spaces at end of token.
-				for ( ; eot > data && mime::is_lws(*(eot-1)); --eot )
-					;
-
-				if ( data != eot && software_version_found )
-					Conn()->VersionFoundEvent(host, data, eot - data, this);
-				data = eot + 1;
-				}
-
-			len -= eoc - data_start;
-			data = eoc;
-			continue;
-			}
-
-		offset = mime::MIME_get_slash_token_pair(len, data,
-						&product, &product_version);
-		if ( offset < 0 )
-			{
-			// I guess version detection is best-effort,
-			// so we do not complain in the final version
-			if ( num_version == 0 )
-				HTTP_Event("bad_HTTP_version",
-						mime::new_string_val(len, data));
-
-			// Try to simply skip next token.
-			offset = mime::MIME_get_token(len, data, &product);
-			if ( offset < 0 )
-				break;
-
-			len -= offset;
-			data += offset;
-			}
-
-		else
-			{
-			len -= offset;
-			data += offset;
-
-			int version_len =
-				product.length + 1 + product_version.length;
-
-			char* version_str = new char[version_len+1];
-			char* s = version_str;
-
-			memcpy(s, product.data, product.length);
-
-			s += product.length;
-			*(s++) = '/';
-
-			memcpy(s, product_version.data, product_version.length);
-
-			s += product_version.length;
-			*s = 0;
-
-			if ( software_version_found )
-				Conn()->VersionFoundEvent(host,	version_str,
-							version_len, this);
-
-			delete [] version_str;
-			++num_version;
-			}
 		}
 	}
 

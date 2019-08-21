@@ -1,7 +1,7 @@
 # @TEST-PORT: BROKER_PORT
 #
-# @TEST-EXEC: btest-bg-run clone "bro -B broker -b  ../clone-main.zeek >clone.out"
-# @TEST-EXEC: btest-bg-run master "bro -B broker -b  ../master-main.zeek >master.out"
+# @TEST-EXEC: btest-bg-run clone "zeek -B broker -b  ../clone-main.zeek >clone.out"
+# @TEST-EXEC: btest-bg-run master "zeek -B broker -b  ../master-main.zeek >master.out"
 #
 # @TEST-EXEC: btest-bg-wait 45
 # @TEST-EXEC: btest-diff clone/clone.out
@@ -50,8 +50,8 @@ event inserted()
 
 event zeek_init()
 	{
-	Broker::auto_publish("bro/events", done);
-	Broker::subscribe("bro/");
+	Broker::auto_publish("zeek/events", done);
+	Broker::subscribe("zeek/");
 
 	h = Broker::create_master("test");
 	Broker::put(h, "one", "110");
@@ -131,8 +131,8 @@ event lookup(stage: count)
 
 event zeek_init()
 	{
-	Broker::auto_publish("bro/events", inserted);
-	Broker::subscribe("bro/");
+	Broker::auto_publish("zeek/events", inserted);
+	Broker::subscribe("zeek/");
 	Broker::listen("127.0.0.1", to_port(getenv("BROKER_PORT")));
 	}
 

@@ -1,5 +1,5 @@
 ##! This script loads everything in the base/ script directory.  If you want
-##! to run Bro without all of these scripts loaded by default, you can use
+##! to run Zeek without all of these scripts loaded by default, you can use
 ##! the ``-b`` (``--bare-mode``) command line argument.  You can also copy the
 ##! "@load" lines from this script to your own script to load only the scripts
 ##! that you actually want.
@@ -54,8 +54,10 @@
 @load base/protocols/irc
 @load base/protocols/krb
 @load base/protocols/modbus
+@load base/protocols/mqtt
 @load base/protocols/mysql
 @load base/protocols/ntlm
+@load base/protocols/ntp
 @load base/protocols/pop3
 @load base/protocols/radius
 @load base/protocols/rdp
@@ -74,7 +76,6 @@
 @load base/files/pe
 @load base/files/hash
 @load base/files/extract
-@load base/files/unified2
 @load base/files/x509
 
 @load base/misc/find-checksum-offloading

@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <ctype.h>
 
@@ -50,72 +50,12 @@ void ConnectionTimer::Dispatch(double t, int is_expire)
 		reporter->InternalError("reference count inconsistency in ConnectionTimer::Dispatch");
 	}
 
-IMPLEMENT_SERIAL(ConnectionTimer, SER_CONNECTION_TIMER);
-
-bool ConnectionTimer::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_CONNECTION_TIMER, Timer);
-
-	// We enumerate all the possible timer functions here ... This
-	// has to match the list is DoUnserialize()!
-	char type = 0;
-
-	if ( timer == timer_func(&Connection::DeleteTimer) )
-		type = 1;
-	else if ( timer == timer_func(&Connection::InactivityTimer) )
-		type = 2;
-	else if ( timer == timer_func(&Connection::StatusUpdateTimer) )
-		type = 3;
-	else if ( timer == timer_func(&Connection::RemoveConnectionTimer) )
-		type = 4;
-	else
-		reporter->InternalError("unknown function in ConnectionTimer::DoSerialize()");
-
-	return conn->Serialize(info) && SERIALIZE(type) && SERIALIZE(do_expire);
-	}
-
-bool ConnectionTimer::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Timer);
-
-	conn = Connection::Unserialize(info);
-	if ( ! conn )
-		return false;
-
-	char type;
-
-	if ( ! UNSERIALIZE(&type) || ! UNSERIALIZE(&do_expire) )
-		return false;
-
-	switch ( type ) {
-	case 1:
-		timer = timer_func(&Connection::DeleteTimer);
-		break;
-	case 2:
-		timer = timer_func(&Connection::InactivityTimer);
-		break;
-	case 3:
-		timer = timer_func(&Connection::StatusUpdateTimer);
-		break;
-	case 4:
-		timer = timer_func(&Connection::RemoveConnectionTimer);
-		break;
-	default:
-		info->s->Error("unknown connection timer function");
-		return false;
-	}
-
-	return true;
-	}
-
-uint64 Connection::total_connections = 0;
-uint64 Connection::current_connections = 0;
-uint64 Connection::external_connections = 0;
-
-IMPLEMENT_SERIAL(Connection, SER_CONNECTION);
+uint64_t Connection::total_connections = 0;
+uint64_t Connection::current_connections = 0;
+uint64_t Connection::external_connections = 0;
 
 Connection::Connection(NetSessions* s, HashKey* k, double t, const ConnID* id,
-                       uint32 flow, const Packet* pkt,
+                       uint32_t flow, const Packet* pkt,
 		       const EncapsulationStack* arg_encap)
 	{
 	sessions = s;
@@ -288,9 +228,9 @@ bool Connection::IsReuse(double t, const u_char* pkt)
 	return root_analyzer && root_analyzer->IsReuse(t, pkt);
 	}
 
-bool Connection::ScaledHistoryEntry(char code, uint32& counter,
-                                    uint32& scaling_threshold,
-                                    uint32 scaling_base)
+bool Connection::ScaledHistoryEntry(char code, uint32_t& counter,
+                                    uint32_t& scaling_threshold,
+                                    uint32_t scaling_base)
 	{
 	if ( ++counter == scaling_threshold )
 		{
@@ -314,7 +254,7 @@ bool Connection::ScaledHistoryEntry(char code, uint32& counter,
 	}
 
 void Connection::HistoryThresholdEvent(EventHandlerPtr e, bool is_orig,
-                                       uint32 threshold)
+                                       uint32_t threshold)
 	{
 	if ( ! e )
 		return;
@@ -508,173 +448,6 @@ void Connection::Match(Rule::PatternType type, const u_char* data, int len, bool
 		primary_PIA->Match(type, data, len, is_orig, bol, eol, clear_state);
 	}
 
-Val* Connection::BuildVersionVal(const char* s, int len)
-	{
-	Val* name = 0;
-	Val* major = 0;
-	Val* minor = 0;
-	Val* minor2 = 0;
-	Val* addl = 0;
-
-	const char* last = s + len;
-	const char* e = s;
-
-	// This is all just a guess...
-
-	// Eat non-alpha-numerical chars.
-	for ( ; s < last && ! isalnum(*s); ++s )
-		;
-
-	// Leading characters are the program name.
-	// (first character must not be a digit)
-	if ( isalpha(*s) )
-		{
-		for ( e = s; e < last && ! is_version_sep(e, last); ++e )
-			;
-
-		if ( s != e )
-			name = new StringVal(e - s, s);
-		}
-
-	// Find first number - that's the major version.
-	for ( s = e; s < last && ! isdigit(*s); ++s )
-		;
-	for ( e = s; e < last && isdigit(*e); ++e )
-		;
-
-	if ( s != e )
-		major = val_mgr->GetInt(atoi(s));
-
-	// Find second number seperated only by punctuation chars -
-	// that's the minor version.
-	for ( s = e; s < last && ispunct(*s); ++s )
-		;
-	for ( e = s; e < last && isdigit(*e); ++e )
-		;
-
-	if ( s != e )
-		minor = val_mgr->GetInt(atoi(s));
-
-	// Find second number seperated only by punctuation chars; -
-	// that's the minor version.
-	for ( s = e; s < last && ispunct(*s); ++s )
-		;
-	for ( e = s; e < last && isdigit(*e); ++e )
-		;
-
-	if ( s != e )
-		minor2 = val_mgr->GetInt(atoi(s));
-
-	// Anything after following punctuation and until next white space is
-	// an additional version string.
-	for ( s = e; s < last && ispunct(*s); ++s )
-		;
-	for ( e = s; e < last && ! isspace(*e); ++e )
-		;
-
-	if ( s != e )
-		addl = new StringVal(e - s, s);
-
-	// If we do not have a name yet, the next alphanumerical string is it.
-	if ( ! name )
-		{ // eat non-alpha-numerical characters
-		for ( s = e; s < last && ! isalpha(*s); ++s )
-			;
-
-		// Get name.
-		for ( e = s; e < last && (isalnum(*e) || *e == '_'); ++e )
-			;
-
-		if ( s != e )
-			name = new StringVal(e - s, s);
-		}
-
-	// We need at least a name.
-	if ( ! name )
-		{
-		Unref(major);
-		Unref(minor);
-		Unref(minor2);
-		Unref(addl);
-		return 0;
-		}
-
-	RecordVal* version = new RecordVal(software_version);
-	version->Assign(0, major ? major : val_mgr->GetInt(-1));
-	version->Assign(1, minor ? minor : val_mgr->GetInt(-1));
-	version->Assign(2, minor2 ? minor2 : val_mgr->GetInt(-1));
-	version->Assign(3, addl ? addl : val_mgr->GetEmptyString());
-
-	RecordVal* sw = new RecordVal(software);
-	sw->Assign(0, name);
-	sw->Assign(1, version);
-
-	return sw;
-	}
-
-int Connection::VersionFoundEvent(const IPAddr& addr, const char* s, int len,
-					analyzer::Analyzer* analyzer)
-	{
-	if ( ! software_version_found && ! software_parse_error )
-		return 1;
-
-	if ( ! is_printable(s, len) )
-		return 0;
-
-	Val* val = BuildVersionVal(s, len);
-	if ( ! val )
-		{
-		if ( software_parse_error )
-			{
-			ConnectionEventFast(software_parse_error, analyzer, {
-				BuildConnVal(),
-				new AddrVal(addr),
-				new StringVal(len, s),
-			});
-			}
-		return 0;
-		}
-
-	if ( software_version_found )
-		{
-		ConnectionEventFast(software_version_found, 0, {
-			BuildConnVal(),
-			new AddrVal(addr),
-			val,
-			new StringVal(len, s),
-		});
-		}
-	else
-		Unref(val);
-
-	return 1;
-	}
-
-int Connection::UnparsedVersionFoundEvent(const IPAddr& addr,
-					const char* full, int len, analyzer::Analyzer* analyzer)
-	{
-	// Skip leading white space.
-	while ( len && isspace(*full) )
-		{
-		--len;
-		++full;
-		}
-
-	if ( ! is_printable(full, len) )
-		return 0;
-
-	if ( software_unparsed_version_found )
-		{
-		ConnectionEventFast(software_unparsed_version_found, analyzer, {
-			BuildConnVal(),
-			new AddrVal(addr),
-			new StringVal(len, full),
-		});
-		}
-
-	return 1;
-	}
-
 void Connection::Event(EventHandlerPtr f, analyzer::Analyzer* analyzer, const char* name)
 	{
 	if ( ! f )
@@ -708,8 +481,8 @@ void Connection::ConnectionEvent(EventHandlerPtr f, analyzer::Analyzer* a, val_l
 		{
 		// This may actually happen if there is no local handler
 		// and a previously existing remote handler went away.
-		loop_over_list(vl, i)
-			Unref(vl[i]);
+		for ( const auto& v : vl)
+			Unref(v);
 
 		return;
 		}
@@ -752,7 +525,7 @@ void Connection::AddTimer(timer_func timer, double t, int do_expire,
 
 	Timer* conn_timer = new ConnectionTimer(this, timer, t, do_expire, type);
 	GetTimerMgr()->Add(conn_timer);
-	timers.append(conn_timer);
+	timers.push_back(conn_timer);
 	}
 
 void Connection::RemoveTimer(Timer* t)
@@ -767,11 +540,10 @@ void Connection::CancelTimers()
 	// traversing. Thus, we first make a copy of the list which we then
 	// iterate through.
 	timer_list tmp(timers.length());
-	loop_over_list(timers, j)
-		tmp.append(timers[j]);
+	std::copy(timers.begin(), timers.end(), std::back_inserter(tmp));
 
-	loop_over_list(tmp, i)
-		GetTimerMgr()->Cancel(tmp[i]);
+	for ( const auto& timer : tmp )
+		GetTimerMgr()->Cancel(timer);
 
 	timers_canceled = 1;
 	timers.clear();
@@ -796,7 +568,7 @@ void Connection::FlipRoles()
 	resp_addr = orig_addr;
 	orig_addr = tmp_addr;
 
-	uint32 tmp_port = resp_port;
+	uint32_t tmp_port = resp_port;
 	resp_port = orig_port;
 	orig_port = tmp_port;
 
@@ -810,7 +582,7 @@ void Connection::FlipRoles()
 	saw_first_resp_packet = saw_first_orig_packet;
 	saw_first_orig_packet = tmp_bool;
 
-	uint32 tmp_flow = resp_flow_label;
+	uint32_t tmp_flow = resp_flow_label;
 	resp_flow_label = orig_flow_label;
 	orig_flow_label = tmp_flow;
 
@@ -900,148 +672,15 @@ void Connection::IDString(ODesc* d) const
 	d->Add(ntohs(resp_port));
 	}
 
-bool Connection::Serialize(SerialInfo* info) const
-	{
-	return SerialObj::Serialize(info);
-	}
-
-Connection* Connection::Unserialize(UnserialInfo* info)
-	{
-	return (Connection*) SerialObj::Unserialize(info, SER_CONNECTION);
-	}
-
-bool Connection::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_CONNECTION, BroObj);
-
-	// First we write the members which are needed to
-	// create the HashKey.
-	if ( ! SERIALIZE(orig_addr) || ! SERIALIZE(resp_addr) )
-		return false;
-
-	if ( ! SERIALIZE(orig_port) || ! SERIALIZE(resp_port) )
-		return false;
-
-	if ( ! SERIALIZE(timers.length()) )
-		return false;
-
-	loop_over_list(timers, i)
-		if ( ! timers[i]->Serialize(info) )
-			return false;
-
-	SERIALIZE_OPTIONAL(conn_val);
-
-	// FIXME: RuleEndpointState not yet serializable.
-	// FIXME: Analyzers not yet serializable.
-
-	return
-		SERIALIZE(int(proto)) &&
-		SERIALIZE(history) &&
-		SERIALIZE(hist_seen) &&
-		SERIALIZE(start_time) &&
-		SERIALIZE(last_time) &&
-		SERIALIZE(inactivity_timeout) &&
-		SERIALIZE(suppress_event) &&
-		SERIALIZE(login_conn != 0) &&
-		SERIALIZE_BIT(installed_status_timer) &&
-		SERIALIZE_BIT(timers_canceled) &&
-		SERIALIZE_BIT(is_active) &&
-		SERIALIZE_BIT(skip) &&
-		SERIALIZE_BIT(weird) &&
-		SERIALIZE_BIT(finished) &&
-		SERIALIZE_BIT(record_packets) &&
-		SERIALIZE_BIT(record_contents);
-	}
-
-bool Connection::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BroObj);
-
-	// Build the hash key first. Some of the recursive *::Unserialize()
-	// functions may need it.
-	ConnID id;
-
-	if ( ! UNSERIALIZE(&orig_addr) || ! UNSERIALIZE(&resp_addr) )
-		goto error;
-
-	if ( ! UNSERIALIZE(&orig_port) || ! UNSERIALIZE(&resp_port) )
-		goto error;
-
-	id.src_addr = orig_addr;
-	id.dst_addr = resp_addr;
-	// This doesn't work for ICMP. But I guess this is not really important.
-	id.src_port = orig_port;
-	id.dst_port = resp_port;
-	id.is_one_way = 0;	// ### incorrect for ICMP
-	key = BuildConnIDHashKey(id);
-
-	int len;
-	if ( ! UNSERIALIZE(&len) )
-		goto error;
-
-	while ( len-- )
-		{
-		Timer* t = Timer::Unserialize(info);
-		if ( ! t )
-			goto error;
-		timers.append(t);
-		}
-
-	UNSERIALIZE_OPTIONAL(conn_val,
-			(RecordVal*) Val::Unserialize(info, connection_type));
-
-	int iproto;
-
-	if ( ! (UNSERIALIZE(&iproto) &&
-		UNSERIALIZE(&history) &&
-		UNSERIALIZE(&hist_seen) &&
-		UNSERIALIZE(&start_time) &&
-		UNSERIALIZE(&last_time) &&
-		UNSERIALIZE(&inactivity_timeout) &&
-		UNSERIALIZE(&suppress_event)) )
-		goto error;
-
-	proto = static_cast<TransportProto>(iproto);
-
-	bool has_login_conn;
-	if ( ! UNSERIALIZE(&has_login_conn) )
-		goto error;
-
-	login_conn = has_login_conn ? (LoginConn*) this : 0;
-
-	UNSERIALIZE_BIT(installed_status_timer);
-	UNSERIALIZE_BIT(timers_canceled);
-	UNSERIALIZE_BIT(is_active);
-	UNSERIALIZE_BIT(skip);
-	UNSERIALIZE_BIT(weird);
-	UNSERIALIZE_BIT(finished);
-	UNSERIALIZE_BIT(record_packets);
-	UNSERIALIZE_BIT(record_contents);
-
-	// Hmm... Why does each connection store a sessions ptr?
-	sessions = ::sessions;
-
-	root_analyzer = 0;
-	primary_PIA = 0;
-	conn_timer_mgr = 0;
-
-	return true;
-
-error:
-	abort();
-	CancelTimers();
-	return false;
-	}
-
 void Connection::SetRootAnalyzer(analyzer::TransportLayerAnalyzer* analyzer, analyzer::pia::PIA* pia)
 	{
 	root_analyzer = analyzer;
 	primary_PIA = pia;
 	}
 
-void Connection::CheckFlowLabel(bool is_orig, uint32 flow_label)
+void Connection::CheckFlowLabel(bool is_orig, uint32_t flow_label)
 	{
-	uint32& my_flow_label = is_orig ? orig_flow_label : resp_flow_label;
+	uint32_t& my_flow_label = is_orig ? orig_flow_label : resp_flow_label;
 
 	if ( my_flow_label != flow_label )
 		{
@@ -1071,7 +710,7 @@ void Connection::CheckFlowLabel(bool is_orig, uint32 flow_label)
 		saw_first_resp_packet = 1;
 	}
 
-bool Connection::PermitWeird(const char* name, uint64 threshold, uint64 rate,
+bool Connection::PermitWeird(const char* name, uint64_t threshold, uint64_t rate,
                              double duration)
 	{
 	return ::PermitWeird(weird_state, name, threshold, rate, duration);

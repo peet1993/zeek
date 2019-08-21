@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "bro-config.h"
+#include "zeek-config.h"
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -20,13 +20,22 @@
 #include "Scope.h"
 #include "NetVar.h"
 #include "Expr.h"
-#include "Serializer.h"
 #include "PrefixTable.h"
 #include "Conn.h"
 #include "Reporter.h"
 #include "IPAddr.h"
 
 #include "broker/Data.h"
+
+#include "3rdparty/json.hpp"
+#include "3rdparty/fifo_map.hpp"
+
+// Define a class for use with the json library that orders the keys in the same order that
+// they were inserted. By default, the json library orders them alphabetically and we don't
+// want it like that.
+template<class K, class V, class compare, class A>
+using json_fifo_map = nlohmann::fifo_map<K, V, nlohmann::fifo_map_compare<K>, A>;
+using ZeekJson = nlohmann::basic_json<json_fifo_map>;
 
 Val::Val(Func* f)
 	{
@@ -71,246 +80,67 @@ Val::~Val()
 #endif
 	}
 
-Val* Val::Clone() const
+Val* Val::Clone()
 	{
-	SerializationFormat* form = new BinarySerializationFormat();
-	form->StartWrite();
-
-	CloneSerializer ss(form);
-	SerialInfo sinfo(&ss);
-	sinfo.cache = false;
-	sinfo.include_locations = false;
-
-	if ( ! this->Serialize(&sinfo) )
-		return 0;
-
-	char* data;
-	uint32 len = form->EndWrite(&data);
-	form->StartRead(data, len);
-
-	UnserialInfo uinfo(&ss);
-	uinfo.cache = false;
-	Val* clone = Unserialize(&uinfo, type);
-
-	free(data);
-	return clone;
-	}
-
-bool Val::Serialize(SerialInfo* info) const
-	{
-	return SerialObj::Serialize(info);
-	}
-
-Val* Val::Unserialize(UnserialInfo* info, TypeTag type, const BroType* exact_type)
-	{
-	Val* v = (Val*) SerialObj::Unserialize(info, SER_VAL);
-	if ( ! v )
-		return 0;
-
-	if ( type != TYPE_ANY && (v->Type()->Tag() != type
-		|| (exact_type && ! same_type(exact_type, v->Type()))) )
-		{
-		info->s->Error("type mismatch for value");
-		Unref(v);
-		return 0;
-		}
-
-	// For MutableVals, we may get a value which, by considering the
-	// globally unique ID, we already know. To keep references correct,
-	// we have to bind to the local version. (FIXME: This is not the
-	// nicest solution.  Ideally, DoUnserialize() should be able to pass
-	// us an alternative ptr to the correct object.)
-	if ( v->IsMutableVal() )
-		{
-		MutableVal* mv = v->AsMutableVal();
-		if ( mv->HasUniqueID() )
-			{
-			ID* current =
-				global_scope()->Lookup(mv->UniqueID()->Name());
-
-			if ( current && current != mv->UniqueID() )
-				{
-				DBG_LOG(DBG_STATE, "binding to already existing ID %s\n", current->Name());
-				assert(current->ID_Val());
-
-				// Need to unset the ID here.  Otherwise,
-				// when the SerializationCache destroys
-				// the value, the global name will disappear.
-				mv->SetID(0);
-				Unref(v);
-				return current->ID_Val()->Ref();
-				}
-			}
-		}
-
-	// An enum may be bound to a different internal number remotely than we
-	// do for the same identifier. Check if this is the case, and, if yes,
-	// rebind to our value.
-	if ( v->Type()->Tag() == TYPE_ENUM )
-		{
-		int rv = v->AsEnum();
-		EnumType* rt = v->Type()->AsEnumType();
-
-		const char* name = rt->Lookup(rv);
-		if ( name )
-			{
-			// See if we know the enum locally.
-			ID* local = global_scope()->Lookup(name);
-			if ( local && local->IsEnumConst() )
-				{
-				EnumType* lt = local->Type()->AsEnumType();
-				int lv = lt->Lookup(local->ModuleName(),
-							local->Name());
-
-				// Compare.
-				if ( rv != lv )
-					{
-					// Different, so let's bind the val
-					// to the local type.
-					v->val.int_val = lv;
-					Unref(rt);
-					v->type = lt;
-					::Ref(lt);
-					}
-				}
-			}
-
-		}
-
+	Val::CloneState state;
+	auto v = Clone(&state);
 	return v;
 	}
 
-IMPLEMENT_SERIAL(Val, SER_VAL);
-
-bool Val::DoSerialize(SerialInfo* info) const
+Val* Val::Clone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_VAL, BroObj);
+	auto i = state->clones.find(this);
 
-	if ( ! type->Serialize(info) )
-		return false;
+	if ( i != state->clones.end() )
+		return i->second->Ref();
 
+	auto c = DoClone(state);
+
+	if ( ! c )
+		reporter->RuntimeError(GetLocationInfo(), "cannot clone value");
+
+	return c;
+	}
+
+Val* Val::DoClone(CloneState* state)
+	{
 	switch ( type->InternalType() ) {
-	case TYPE_INTERNAL_VOID:
-		info->s->Error("type is void");
-		return false;
-
 	case TYPE_INTERNAL_INT:
-		return SERIALIZE(val.int_val);
-
 	case TYPE_INTERNAL_UNSIGNED:
-		return SERIALIZE(val.uint_val);
-
 	case TYPE_INTERNAL_DOUBLE:
-		return SERIALIZE(val.double_val);
-
-	case TYPE_INTERNAL_STRING:
-		return SERIALIZE_STR((const char*) val.string_val->Bytes(),
-				val.string_val->Len());
-
-	case TYPE_INTERNAL_ADDR:
-		return SERIALIZE(*val.addr_val);
-
-	case TYPE_INTERNAL_SUBNET:
-		return SERIALIZE(*val.subnet_val);
+	 	// Immutable.
+		return Ref();
 
 	case TYPE_INTERNAL_OTHER:
-		// Derived classes are responsible for this.
-		// Exception: Functions and files. There aren't any derived
-		// classes.
+		// Derived classes are responsible for this. Exception:
+		// Functions and files. There aren't any derived classes.
 		if ( type->Tag() == TYPE_FUNC )
-			if ( ! AsFunc()->Serialize(info) )
-				return false;
+			return new Val(AsFunc()->DoClone());
 
 		if ( type->Tag() == TYPE_FILE )
-			if ( ! AsFile()->Serialize(info) )
-				return false;
-		return true;
+			{
+			// I think we can just ref the file here - it is unclear what else
+			// to do.  In the case of cached files, I think this is equivalent
+			// to what happened before - serialization + unserialization just
+			// have you the same pointer that you already had.  In the case of
+			// non-cached files, the behavior now is different; in the past,
+			// serialize + unserialize gave you a new file object because the
+			// old one was not in the list anymore. This object was
+			// automatically opened. This does not happen anymore - instead you
+			// get the non-cached pointer back which is brought back into the
+			// cache when written too.
+			return Ref();
+			}
 
-	case TYPE_INTERNAL_ERROR:
-		info->s->Error("type is error");
-		return false;
+		// Fall-through.
 
 	default:
-		info->s->Error("type is out of range");
-		return false;
+		reporter->InternalError("cloning illegal base type");
 	}
 
-	return false;
-	}
-
-bool Val::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(BroObj);
-
-	if ( type )
-		Unref(type);
-
-	if ( ! (type = BroType::Unserialize(info)) )
-		return false;
-
-	switch ( type->InternalType() ) {
-	case TYPE_INTERNAL_VOID:
-		info->s->Error("type is void");
-		return false;
-
-	case TYPE_INTERNAL_INT:
-		return UNSERIALIZE(&val.int_val);
-
-	case TYPE_INTERNAL_UNSIGNED:
-		return UNSERIALIZE(&val.uint_val);
-
-	case TYPE_INTERNAL_DOUBLE:
-		return UNSERIALIZE(&val.double_val);
-
-	case TYPE_INTERNAL_STRING:
-		const char* str;
-		int len;
-		if ( ! UNSERIALIZE_STR(&str, &len) )
-			return false;
-
-		val.string_val = new BroString((u_char*) str, len, 1);
-		delete [] str;
-		return true;
-
-	case TYPE_INTERNAL_ADDR:
-		{
-		val.addr_val = new IPAddr();
-		return UNSERIALIZE(val.addr_val);
-		}
-
-	case TYPE_INTERNAL_SUBNET:
-		{
-		val.subnet_val = new IPPrefix();
-		return UNSERIALIZE(val.subnet_val);
-		}
-
-	case TYPE_INTERNAL_OTHER:
-		// Derived classes are responsible for this.
-		// Exception: Functions and files. There aren't any derived
-		// classes.
-		if ( type->Tag() == TYPE_FUNC )
-			{
-			val.func_val = Func::Unserialize(info);
-			return val.func_val != 0;
-			}
-		else if ( type->Tag() == TYPE_FILE )
-			{
-			val.file_val = BroFile::Unserialize(info);
-			return val.file_val != 0;
-			}
-		return true;
-
-	case TYPE_INTERNAL_ERROR:
-		info->s->Error("type is error");
-		return false;
-
-	default:
-		info->s->Error("type out of range");
-		return false;
-	}
-
-	return false;
-	}
+	reporter->InternalError("cannot be reached");
+	return nullptr;
+ 	}
 
 int Val::IsZero() const
 	{
@@ -530,181 +360,303 @@ void Val::ValDescribeReST(ODesc* d) const
 	}
 	}
 
-MutableVal::~MutableVal()
+
+bool Val::WouldOverflow(const BroType* from_type, const BroType* to_type, const Val* val)
 	{
-	for ( list<ID*>::iterator i = aliases.begin(); i != aliases.end(); ++i )
+	if ( !to_type || !from_type )
+		return true;
+	else if ( same_type(to_type, from_type) )
+		return false;
+
+	if ( to_type->InternalType() == TYPE_INTERNAL_DOUBLE )
+		return false;
+	else if ( to_type->InternalType() == TYPE_INTERNAL_UNSIGNED )
 		{
-		if ( global_scope() )
-			global_scope()->Remove((*i)->Name());
-		(*i)->ClearVal();	// just to make sure.
-		Unref((*i));
+		if ( from_type->InternalType() == TYPE_INTERNAL_DOUBLE )
+			return (val->InternalDouble() < 0.0 || val->InternalDouble() > static_cast<double>(UINT64_MAX));
+		else if ( from_type->InternalType() == TYPE_INTERNAL_INT )
+			return (val->InternalInt() < 0);
+		}
+	else if ( to_type->InternalType() == TYPE_INTERNAL_INT )
+		{
+		if ( from_type->InternalType() == TYPE_INTERNAL_DOUBLE )
+			return (val->InternalDouble() < static_cast<double>(INT64_MIN) ||
+			        val->InternalDouble() > static_cast<double>(INT64_MAX));
+		else if ( from_type->InternalType() == TYPE_INTERNAL_UNSIGNED )
+			return (val->InternalUnsigned() > INT64_MAX);
 		}
 
-	if ( id )
+	return false;
+	}
+
+TableVal* Val::GetRecordFields()
+	{
+	TableVal* fields = new TableVal(internal_type("record_field_table")->AsTableType());
+
+	auto t = Type();
+
+	if ( t->Tag() != TYPE_RECORD && t->Tag() != TYPE_TYPE )
 		{
-		if ( global_scope() )
-			global_scope()->Remove(id->Name());
-		id->ClearVal(); // just to make sure.
-		Unref(id);
-		}
-	}
-
-bool MutableVal::AddProperties(Properties arg_props)
-	{
-	if ( (props | arg_props) == props )
-		// No change.
-		return false;
-
-	props |= arg_props;
-
-	if ( ! id )
-		Bind();
-
-	return true;
-	}
-
-
-bool MutableVal::RemoveProperties(Properties arg_props)
-	{
-	if ( (props & ~arg_props) == props )
-		// No change.
-		return false;
-
-	props &= ~arg_props;
-
-	return true;
-	}
-
-ID* MutableVal::Bind() const
-	{
-	static bool initialized = false;
-
-	assert(!id);
-
-	static unsigned int id_counter = 0;
-	static const int MAX_NAME_SIZE = 128;
-	static char name[MAX_NAME_SIZE];
-	static char* end_of_static_str = 0;
-
-	if ( ! initialized )
-		{
-		// Get local IP.
-		char host[MAXHOSTNAMELEN];
-		strcpy(host, "localhost");
-		gethostname(host, MAXHOSTNAMELEN);
-		host[MAXHOSTNAMELEN-1] = '\0';
-#if 0
-		// We ignore errors.
-		struct hostent* ent = gethostbyname(host);
-
-		uint32 ip;
-		if ( ent && ent->h_addr_list[0] )
-			ip = *(uint32*) ent->h_addr_list[0];
-		else
-			ip = htonl(0x7f000001);	// 127.0.0.1
-
-		safe_snprintf(name, MAX_NAME_SIZE, "#%s#%d#",
-			      IPAddr(IPv4, &ip, IPAddr::Network)->AsString().c_str(),
-			      getpid());
-#else
-		safe_snprintf(name, MAX_NAME_SIZE, "#%s#%d#", host, getpid());
-#endif
-
-		end_of_static_str = name + strlen(name);
-
-		initialized = true;
+		reporter->Error("non-record value/type passed to record_fields");
+		return fields;
 		}
 
-	safe_snprintf(end_of_static_str, MAX_NAME_SIZE - (end_of_static_str - name),
-		      "%u", ++id_counter);
-	name[MAX_NAME_SIZE-1] = '\0';
+	RecordType* rt = nullptr;
+	RecordVal* rv = nullptr;
 
-//	DBG_LOG(DBG_STATE, "new unique ID %s", name);
-
-	id = new ID(name, SCOPE_GLOBAL, true);
-	id->SetType(const_cast<MutableVal*>(this)->Type()->Ref());
-
-	global_scope()->Insert(name, id);
-
-	id->SetVal(const_cast<MutableVal*>(this), OP_NONE, true);
-
-	return id;
-	}
-
-void MutableVal::TransferUniqueID(MutableVal* mv)
-	{
-	const char* new_name = mv->UniqueID()->Name();
-
-	if ( ! id )
-		Bind();
-
-	DBG_LOG(DBG_STATE, "transfering ID (new %s, old/alias %s)", new_name, id->Name());
-
-	// Keep old name as alias.
-	aliases.push_back(id);
-
-	id = new ID(new_name, SCOPE_GLOBAL, true);
-	id->SetType(const_cast<MutableVal*>(this)->Type()->Ref());
-	global_scope()->Insert(new_name, id);
-	id->SetVal(const_cast<MutableVal*>(this), OP_NONE, true);
-
-	Unref(mv->id);
-	mv->id = 0;
-	}
-
-IMPLEMENT_SERIAL(MutableVal, SER_MUTABLE_VAL);
-
-bool MutableVal::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_MUTABLE_VAL, Val);
-
-	if ( ! SERIALIZE(props) )
-		return false;
-
-	// Don't use ID::Serialize here, that would loop.  All we
-	// need is the name, anyway.
-	const char* name = id ? id->Name() : "";
-	if ( ! SERIALIZE(name) )
-		return false;
-
-	return true;
-	}
-
-bool MutableVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-
-	if ( ! UNSERIALIZE(&props) )
-		 return false;
-
-	id = 0;
-
-	const char* name;
-	if ( ! UNSERIALIZE_STR(&name, 0) )
-		return false;
-
-	if ( *name )
+	if ( t->Tag() == TYPE_RECORD )
 		{
-		id = new ID(name, SCOPE_GLOBAL, true);
-		id->SetVal(this, OP_NONE, true);
+		rt = t->AsRecordType();
+		rv = AsRecordVal();
+		}
+	else
+		{
+		t = t->AsTypeType()->Type();
 
-		ID* current = global_scope()->Lookup(name);
-		if ( ! current )
+		if ( t->Tag() != TYPE_RECORD )
 			{
-			global_scope()->Insert(name, id);
-			DBG_LOG(DBG_STATE, "installed formerly unknown ID %s", id->Name());
+			reporter->Error("non-record value/type passed to record_fields");
+			return fields;
 			}
-		else
-			{
-			DBG_LOG(DBG_STATE, "got already known ID %s", current->Name());
-			// This means that we already know the value and
-			// that in fact we should bind to the local value.
-			// Val::Unserialize() will take care of this.
-			}
+
+		rt = t->AsRecordType();
 		}
 
-	delete [] name;
-	return true;
+	for ( int i = 0; i < rt->NumFields(); ++i )
+		{
+		BroType* ft = rt->FieldType(i);
+		TypeDecl* fd = rt->FieldDecl(i);
+		Val* fv = nullptr;
+
+		if ( rv )
+			fv = rv->Lookup(i);
+
+		if ( fv )
+			::Ref(fv);
+
+		bool logged = (fd->attrs && fd->FindAttr(ATTR_LOG) != 0);
+
+		RecordVal* nr = new RecordVal(internal_type("record_field")->AsRecordType());
+
+		if ( ft->Tag() == TYPE_RECORD )
+			nr->Assign(0, new StringVal("record " + ft->GetName()));
+		else
+			nr->Assign(0, new StringVal(type_name(ft->Tag())));
+
+		nr->Assign(1, val_mgr->GetBool(logged));
+		nr->Assign(2, fv);
+		nr->Assign(3, rt->FieldDefault(i));
+
+		Val* field_name = new StringVal(rt->FieldName(i));
+		fields->Assign(field_name, nr);
+		Unref(field_name);
+		}
+
+	return fields;
+	}
+
+// This is a static method in this file to avoid including json.hpp in Val.h since it's huge.
+static ZeekJson BuildJSON(Val* val, bool only_loggable=false, RE_Matcher* re=new RE_Matcher("^_"))
+	{
+	ZeekJson j;
+	BroType* type = val->Type();
+	switch ( type->Tag() )
+		{
+		case TYPE_BOOL:
+			j = val->AsBool();
+			break;
+
+		case TYPE_INT:
+			j = val->AsInt();
+			break;
+
+		case TYPE_COUNT:
+			j = val->AsCount();
+			break;
+
+		case TYPE_COUNTER:
+			j = val->AsCounter();
+			break;
+
+		case TYPE_TIME:
+			j = val->AsTime();
+			break;
+
+		case TYPE_DOUBLE:
+			j = val->AsDouble();
+			break;
+
+		case TYPE_PORT:
+			{
+			auto* pval = val->AsPortVal();
+			j["port"] = pval->Port();
+			j["proto"] = pval->Protocol();
+			break;
+			}
+
+		case TYPE_PATTERN:
+		case TYPE_INTERVAL:
+		case TYPE_ADDR:
+		case TYPE_SUBNET:
+			{
+			ODesc d;
+			d.SetStyle(RAW_STYLE);
+			val->Describe(&d);
+
+			auto* bs = new BroString(1, d.TakeBytes(), d.Len());
+			j = string((char*)bs->Bytes(), bs->Len());
+
+			delete bs;
+			break;
+			}
+
+		case TYPE_FILE:
+		case TYPE_FUNC:
+		case TYPE_ENUM:
+		case TYPE_STRING:
+			{
+			ODesc d;
+			d.SetStyle(RAW_STYLE);
+			val->Describe(&d);
+
+			auto* bs = new BroString(1, d.TakeBytes(), d.Len());
+			j = json_escape_utf8(string((char*)bs->Bytes(), bs->Len()));
+
+			delete bs;
+			break;
+			}
+
+		case TYPE_TABLE:
+			{
+			auto* table = val->AsTable();
+			auto* tval = val->AsTableVal();
+
+			if ( tval->Type()->IsSet() )
+				j = ZeekJson::array();
+			else
+				j = ZeekJson::object();
+
+			HashKey* k;
+			auto c = table->InitForIteration();
+			while ( table->NextEntry(k, c) )
+				{
+				auto lv = tval->RecoverIndex(k);
+				delete k;
+
+				if ( tval->Type()->IsSet() )
+					{
+					auto* value = lv->Index(0)->Ref();
+					j.push_back(BuildJSON(value, only_loggable, re));
+					Unref(value);
+					}
+				else
+					{
+					ZeekJson key_json;
+					Val* entry_value;
+					if ( lv->Length() == 1 )
+						{
+						Val* entry_key = lv->Index(0)->Ref();
+						entry_value = tval->Lookup(entry_key, true);
+						key_json = BuildJSON(entry_key, only_loggable, re);
+						Unref(entry_key);
+						}
+					else
+						{
+						entry_value = tval->Lookup(lv, true);
+						key_json = BuildJSON(lv, only_loggable, re);
+						}
+
+					string key_string;
+					if ( key_json.is_string() )
+						key_string = key_json;
+					else
+						key_string = key_json.dump();
+
+					j[key_string] = BuildJSON(entry_value, only_loggable, re);
+					}
+
+				Unref(lv);
+				}
+
+			break;
+			}
+
+		case TYPE_RECORD:
+			{
+			j = ZeekJson::object();
+			auto* rval = val->AsRecordVal();
+			TableVal* fields = rval->GetRecordFields();
+			auto* field_indexes = fields->ConvertToPureList();
+			int num_indexes = field_indexes->Length();
+
+			for ( int i = 0; i < num_indexes; ++i )
+				{
+				Val* key = field_indexes->Index(i);
+				auto* key_field = fields->Lookup(key)->AsRecordVal();
+
+				auto* key_val = key->AsStringVal();
+				string key_string;
+				if ( re->MatchAnywhere(key_val->AsString()) != 0 )
+					{
+					StringVal blank("");
+					key_val = key_val->Substitute(re, &blank, 0)->AsStringVal();
+					key_string = key_val->ToStdString();
+					delete key_val;
+					}
+				else
+					key_string = key_val->ToStdString();
+
+				Val* value = key_field->Lookup("value", true);
+
+				if ( value && ( ! only_loggable || key_field->Lookup("log")->AsBool() ) )
+					j[key_string] = BuildJSON(value, only_loggable, re);
+				}
+
+			delete fields;
+			delete field_indexes;
+			break;
+			}
+
+		case TYPE_LIST:
+			{
+			j = ZeekJson::array();
+			auto* lval = val->AsListVal();
+			size_t size = lval->Length();
+			for (size_t i = 0; i < size; i++)
+				j.push_back(BuildJSON(lval->Index(i), only_loggable, re));
+
+			break;
+			}
+
+		case TYPE_VECTOR:
+			{
+			j = ZeekJson::array();
+			auto* vval = val->AsVectorVal();
+			size_t size = vval->SizeVal()->AsCount();
+			for (size_t i = 0; i < size; i++)
+				j.push_back(BuildJSON(vval->Lookup(i), only_loggable, re));
+
+			break;
+			}
+
+		case TYPE_OPAQUE:
+			{
+			j = ZeekJson::object();
+			auto* oval = val->AsOpaqueVal();
+			j["opaque_type"] = OpaqueMgr::mgr()->TypeID(oval);
+			break;
+			}
+
+		default: break;
+		}
+
+	return j;
+	}
+
+StringVal* Val::ToJSON(bool only_loggable, RE_Matcher* re)
+	{
+	ZeekJson j = BuildJSON(this, only_loggable, re);
+	return new StringVal(j.dump());
 	}
 
 IntervalVal::IntervalVal(double quantity, double units) :
@@ -749,31 +701,17 @@ void IntervalVal::ValDescribe(ODesc* d) const
 	DO_UNIT(Microseconds, "usec")
 	}
 
-IMPLEMENT_SERIAL(IntervalVal, SER_INTERVAL_VAL);
-
-bool IntervalVal::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_INTERVAL_VAL, Val);
-	return true;
-	}
-
-bool IntervalVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-	return true;
-	}
-
-PortVal* PortManager::Get(uint32 port_num) const
+PortVal* PortManager::Get(uint32_t port_num) const
 	{
 	return val_mgr->GetPort(port_num);
 	}
 
-PortVal* PortManager::Get(uint32 port_num, TransportProto port_type) const
+PortVal* PortManager::Get(uint32_t port_num, TransportProto port_type) const
 	{
 	return val_mgr->GetPort(port_num, port_type);
 	}
 
-uint32 PortVal::Mask(uint32 port_num, TransportProto port_type)
+uint32_t PortVal::Mask(uint32_t port_num, TransportProto port_type)
 	{
 	// Note, for ICMP one-way connections:
 	// src_port = icmp_type, dst_port = icmp_code.
@@ -804,18 +742,18 @@ uint32 PortVal::Mask(uint32 port_num, TransportProto port_type)
 	return port_num;
 	}
 
-PortVal::PortVal(uint32 p, TransportProto port_type) : Val(TYPE_PORT)
+PortVal::PortVal(uint32_t p, TransportProto port_type) : Val(TYPE_PORT)
 	{
 	auto port_num = PortVal::Mask(p, port_type);
 	val.uint_val = static_cast<bro_uint_t>(port_num);
 	}
 
-PortVal::PortVal(uint32 p, bool unused) : Val(TYPE_PORT)
+PortVal::PortVal(uint32_t p, bool unused) : Val(TYPE_PORT)
 	{
 	val.uint_val = static_cast<bro_uint_t>(p);
 	}
 
-PortVal::PortVal(uint32 p) : Val(TYPE_PORT)
+PortVal::PortVal(uint32_t p) : Val(TYPE_PORT)
 	{
 	if ( p >= 65536 * NUM_PORT_SPACES )
 		{
@@ -826,10 +764,22 @@ PortVal::PortVal(uint32 p) : Val(TYPE_PORT)
 	val.uint_val = static_cast<bro_uint_t>(p);
 	}
 
-uint32 PortVal::Port() const
+uint32_t PortVal::Port() const
 	{
-	uint32 p = static_cast<uint32>(val.uint_val);
+	uint32_t p = static_cast<uint32_t>(val.uint_val);
 	return p & ~PORT_SPACE_MASK;
+	}
+
+string PortVal::Protocol() const
+	{
+	if ( IsUDP() )
+		return "udp";
+	else if ( IsTCP() )
+		return "tcp";
+	else if ( IsICMP() )
+		return "icmp";
+	else
+		return "unknown";
 	}
 
 int PortVal::IsTCP() const
@@ -849,30 +799,16 @@ int PortVal::IsICMP() const
 
 void PortVal::ValDescribe(ODesc* d) const
 	{
-	uint32 p = static_cast<uint32>(val.uint_val);
+	uint32_t p = static_cast<uint32_t>(val.uint_val);
 	d->Add(p & ~PORT_SPACE_MASK);
-	if ( IsUDP() )
-		d->Add("/udp");
-	else if ( IsTCP() )
-		d->Add("/tcp");
-	else if ( IsICMP() )
-		d->Add("/icmp");
-	else
-		d->Add("/unknown");
+	d->Add("/");
+	d->Add(Protocol());
 	}
 
-IMPLEMENT_SERIAL(PortVal, SER_PORT_VAL);
-
-bool PortVal::DoSerialize(SerialInfo* info) const
+Val* PortVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_PORT_VAL, Val);
-	return true;
-	}
-
-bool PortVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-	return true;
+	// Immutable.
+	return Ref();
 	}
 
 AddrVal::AddrVal(const char* text) : Val(TYPE_ADDR)
@@ -885,13 +821,13 @@ AddrVal::AddrVal(const std::string& text) : Val(TYPE_ADDR)
 	val.addr_val = new IPAddr(text);
 	}
 
-AddrVal::AddrVal(uint32 addr) : Val(TYPE_ADDR)
+AddrVal::AddrVal(uint32_t addr) : Val(TYPE_ADDR)
 	{
 	// ### perhaps do gethostbyaddr here?
 	val.addr_val = new IPAddr(IPv4, &addr, IPAddr::Network);
 	}
 
-AddrVal::AddrVal(const uint32 addr[4]) : Val(TYPE_ADDR)
+AddrVal::AddrVal(const uint32_t addr[4]) : Val(TYPE_ADDR)
 	{
 	val.addr_val = new IPAddr(IPv6, addr, IPAddr::Network);
 	}
@@ -919,35 +855,18 @@ Val* AddrVal::SizeVal() const
 		return val_mgr->GetCount(128);
 	}
 
-IMPLEMENT_SERIAL(AddrVal, SER_ADDR_VAL);
-
-bool AddrVal::DoSerialize(SerialInfo* info) const
+Val* AddrVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_ADDR_VAL, Val);
-	return true;
-	}
-
-bool AddrVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-	return true;
+	// Immutable.
+	return Ref();
 	}
 
 SubNetVal::SubNetVal(const char* text) : Val(TYPE_SUBNET)
 	{
-	string s(text);
-	size_t slash_loc = s.find('/');
+	val.subnet_val = new IPPrefix();
 
-	if ( slash_loc == string::npos )
-		{
+	if ( ! IPPrefix::ConvertString(text, val.subnet_val) )
 		reporter->Error("Bad string in SubNetVal ctor: %s", text);
-		val.subnet_val = new IPPrefix();
-		}
-	else
-		{
-		val.subnet_val = new IPPrefix(s.substr(0, slash_loc),
-		                              atoi(s.substr(slash_loc + 1).c_str()));
-		}
 	}
 
 SubNetVal::SubNetVal(const char* text, int width) : Val(TYPE_SUBNET)
@@ -955,13 +874,13 @@ SubNetVal::SubNetVal(const char* text, int width) : Val(TYPE_SUBNET)
 	val.subnet_val = new IPPrefix(text, width);
 	}
 
-SubNetVal::SubNetVal(uint32 addr, int width) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(uint32_t addr, int width) : Val(TYPE_SUBNET)
 	{
 	IPAddr a(IPv4, &addr, IPAddr::Network);
 	val.subnet_val = new IPPrefix(a, width);
 	}
 
-SubNetVal::SubNetVal(const uint32* addr, int width) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(const uint32_t* addr, int width) : Val(TYPE_SUBNET)
 	{
 	IPAddr a(IPv6, addr, IPAddr::Network);
 	val.subnet_val = new IPPrefix(a, width);
@@ -1014,17 +933,17 @@ IPAddr SubNetVal::Mask() const
 		{
 		// We need to special-case a mask width of zero, since
 		// the compiler doesn't guarantee that 1 << 32 yields 0.
-		uint32 m[4];
+		uint32_t m[4];
 		for ( unsigned int i = 0; i < 4; ++i )
 			m[i] = 0;
 		IPAddr rval(IPv6, m, IPAddr::Host);
 		return rval;
 		}
 
-	uint32 m[4];
-	uint32* mp = m;
+	uint32_t m[4];
+	uint32_t* mp = m;
 
-	uint32 w;
+	uint32_t w;
 	for ( w = val.subnet_val->Length(); w >= 32; w -= 32 )
 		   *(mp++) = 0xffffffff;
 
@@ -1043,18 +962,10 @@ bool SubNetVal::Contains(const IPAddr& addr) const
 	return val.subnet_val->Contains(a);
 	}
 
-IMPLEMENT_SERIAL(SubNetVal, SER_SUBNET_VAL);
-
-bool SubNetVal::DoSerialize(SerialInfo* info) const
+Val* SubNetVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_SUBNET_VAL, Val);
-	return true;
-	}
-
-bool SubNetVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-	return true;
+	// Immutable.
+	return Ref();
 	}
 
 StringVal::StringVal(BroString* s) : Val(TYPE_STRING)
@@ -1075,7 +986,13 @@ StringVal::StringVal(const char* s) : Val(TYPE_STRING)
 
 StringVal::StringVal(const string& s) : Val(TYPE_STRING)
 	{
-	val.string_val = new BroString(s.c_str());
+	val.string_val = new BroString(reinterpret_cast<const u_char*>(s.data()), s.length(), 1);
+	}
+
+string StringVal::ToStdString() const
+	{
+	auto* bs = AsString();
+	return string((char*)bs->Bytes(), bs->Len());
 	}
 
 StringVal* StringVal::ToUpper()
@@ -1099,18 +1016,98 @@ unsigned int StringVal::MemoryAllocation() const
 	return padded_sizeof(*this) + val.string_val->MemoryAllocation();
 	}
 
-IMPLEMENT_SERIAL(StringVal, SER_STRING_VAL);
-
-bool StringVal::DoSerialize(SerialInfo* info) const
+Val* StringVal::Substitute(RE_Matcher* re, StringVal* repl, bool do_all)
 	{
-	DO_SERIALIZE(SER_STRING_VAL, Val);
-	return true;
+	const u_char* s = Bytes();
+	int offset = 0;
+	int n = Len();
+
+	// cut_points is a set of pairs of indices in str that should
+	// be removed/replaced.  A pair <x,y> means "delete starting
+	// at offset x, up to but not including offset y".
+	vector<std::pair<int, int>> cut_points;
+
+	int size = 0;	// size of result
+
+	while ( n > 0 )
+		{
+		// Find next match offset.
+		int end_of_match;
+		while ( n > 0 &&
+		        (end_of_match = re->MatchPrefix(&s[offset], n)) <= 0 )
+			{
+			// This character is going to be copied to the result.
+			++size;
+
+			// Move on to next character.
+			++offset;
+			--n;
+			}
+
+		if ( n <= 0 )
+			break;
+
+		// s[offset .. offset+end_of_match-1] matches re.
+		cut_points.push_back({offset, offset + end_of_match});
+
+		offset += end_of_match;
+		n -= end_of_match;
+
+		if ( ! do_all )
+			{
+			// We've now done the first substitution - finished.
+			// Include the remainder of the string in the result.
+			size += n;
+			break;
+			}
+		}
+
+	// size now reflects amount of space copied.  Factor in amount
+	// of space for replacement text.
+	size += cut_points.size() * repl->Len();
+
+	// And a final NUL for good health.
+	++size;
+
+	byte_vec result = new u_char[size];
+	byte_vec r = result;
+
+	// Copy it all over.
+	int start_offset = 0;
+	for ( const auto& point : cut_points )
+		{
+		int num_to_copy = point.first - start_offset;
+		memcpy(r, s + start_offset, num_to_copy);
+
+		r += num_to_copy;
+		start_offset = point.second;
+
+		// Now add in replacement text.
+		memcpy(r, repl->Bytes(), repl->Len());
+		r += repl->Len();
+		}
+
+	// Copy final trailing characters.
+	int num_to_copy = Len() - start_offset;
+	memcpy(r, s + start_offset, num_to_copy);
+	r += num_to_copy;
+
+	// Final NUL.  No need to increment r, since the length
+	// computed from it in the next statement does not include
+	// the NUL.
+	r[0] = '\0';
+
+	return new StringVal(new BroString(1, result, r - result));
 	}
 
-bool StringVal::DoUnserialize(UnserialInfo* info)
+Val* StringVal::DoClone(CloneState* state)
 	{
-	DO_UNSERIALIZE(Val);
-	return true;
+	// We could likely treat this type as immutable and return a reference
+	// instead of creating a new copy, but we first need to be careful and
+	// audit whether anything internal actually does mutate it.
+	return state->NewClone(this, new StringVal(
+	        new BroString((u_char*) val.string_val->Bytes(),
+	                      val.string_val->Len(), 1)));
 	}
 
 PatternVal::PatternVal(RE_Matcher* re) : Val(base_type(TYPE_PATTERN))
@@ -1161,20 +1158,15 @@ unsigned int PatternVal::MemoryAllocation() const
 	return padded_sizeof(*this) + val.re_val->MemoryAllocation();
 	}
 
-IMPLEMENT_SERIAL(PatternVal, SER_PATTERN_VAL);
-
-bool PatternVal::DoSerialize(SerialInfo* info) const
+Val* PatternVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_PATTERN_VAL, Val);
-	return AsPattern()->Serialize(info);
-	}
-
-bool PatternVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-
-	val.re_val = RE_Matcher::Unserialize(info);
-	return val.re_val != 0;
+	// We could likely treat this type as immutable and return a reference
+	// instead of creating a new copy, but we first need to be careful and
+	// audit whether anything internal actually does mutate it.
+	auto re = new RE_Matcher(val.re_val->PatternText(),
+	                         val.re_val->AnywherePatternText());
+	re->Compile();
+	return state->NewClone(this, new PatternVal(re));
 	}
 
 ListVal::ListVal(TypeTag t)
@@ -1185,8 +1177,8 @@ ListVal::ListVal(TypeTag t)
 
 ListVal::~ListVal()
 	{
-	loop_over_list(vals, i)
-		Unref(vals[i]);
+	for ( const auto& val : vals )
+		Unref(val);
 	Unref(type);
 	}
 
@@ -1196,9 +1188,9 @@ RE_Matcher* ListVal::BuildRE() const
 		Internal("non-string list in ListVal::IncludedInString");
 
 	RE_Matcher* re = new RE_Matcher();
-	loop_over_list(vals, i)
+	for ( const auto& val : vals )
 		{
-		const char* vs = (const char*) (vals[i]->AsString()->Bytes());
+		const char* vs = (const char*) (val->AsString()->Bytes());
 		re->AddPat(vs);
 		}
 
@@ -1213,7 +1205,7 @@ void ListVal::Append(Val* v)
 			Internal("heterogeneous list in ListVal::Append");
 		}
 
-	vals.append(v);
+	vals.push_back(v);
 	type->AsTypeList()->Append(v->Type()->Ref());
 	}
 
@@ -1227,8 +1219,8 @@ TableVal* ListVal::ConvertToSet() const
 	SetType* s = new SetType(set_index, 0);
 	TableVal* t = new TableVal(s);
 
-	loop_over_list(vals, i)
-		t->Assign(vals[i], 0);
+	for ( const auto& val : vals )
+		t->Assign(val, 0);
 
 	Unref(s);
 	return t;
@@ -1259,57 +1251,23 @@ void ListVal::Describe(ODesc* d) const
 		}
 	}
 
-IMPLEMENT_SERIAL(ListVal, SER_LIST_VAL);
-
-bool ListVal::DoSerialize(SerialInfo* info) const
+Val* ListVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_LIST_VAL, Val);
+	auto lv = new ListVal(tag);
+	lv->vals.resize(vals.length());
+	state->NewClone(this, lv);
 
-	if ( ! (SERIALIZE(char(tag)) && SERIALIZE(vals.length())) )
-		return false;
+	for ( const auto& val : vals )
+		lv->Append(val->Clone(state));
 
-	loop_over_list(vals, i)
-		{
-		if ( ! vals[i]->Serialize(info) )
-			return false;
-		}
-
-	return true;
-	}
-
-bool ListVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-
-	char t;
-	int len;
-
-	if ( ! (UNSERIALIZE(&t) && UNSERIALIZE(&len)) )
-		return false;
-
-	tag = TypeTag(t);
-
-	while ( len-- )
-		{
-		Val* v = Val::Unserialize(info, TYPE_ANY);
-		if ( ! v )
-			return false;
-
-		vals.append(v);
-		}
-
-	// Our dtor will do Unref(type) in addition to Val's dtor.
-	if ( type )
-		type->Ref();
-
-	return true;
+	return lv;
 	}
 
 unsigned int ListVal::MemoryAllocation() const
 	{
 	unsigned int size = 0;
-	loop_over_list(vals, i)
-		size += vals[i]->MemoryAllocation();
+	for ( const auto& val : vals )
+		size += val->MemoryAllocation();
 
 	return size + padded_sizeof(*this) + vals.MemoryAllocation() - padded_sizeof(vals)
 		+ type->MemoryAllocation();
@@ -1342,7 +1300,7 @@ static void table_entry_val_delete_func(void* val)
 	delete tv;
 	}
 
-TableVal::TableVal(TableType* t, Attributes* a) : MutableVal(t)
+TableVal::TableVal(TableType* t, Attributes* a) : Val(t)
 	{
 	Init(t);
 	SetAttrs(a);
@@ -1364,7 +1322,7 @@ void TableVal::Init(TableType* t)
 		subnets = 0;
 
 	table_hash = new CompositeHash(table_type->Indices());
-	val.table_val = new PDict(TableEntryVal);
+	val.table_val = new PDict<TableEntryVal>;
 	val.table_val->SetDeleteFunc(table_entry_val_delete_func);
 	}
 
@@ -1387,7 +1345,7 @@ void TableVal::RemoveAll()
 	{
 	// Here we take the brute force approach.
 	delete AsTable();
-	val.table_val = new PDict(TableEntryVal);
+	val.table_val = new PDict<TableEntryVal>;
 	val.table_val->SetDeleteFunc(table_entry_val_delete_func);
 	}
 
@@ -1400,7 +1358,7 @@ int TableVal::RecursiveSize() const
 			!= TYPE_TABLE )
 		return n;
 
-	PDict(TableEntryVal)* v = val.table_val;
+	PDict<TableEntryVal>* v = val.table_val;
 	IterCookie* c = v->InitForIteration();
 
 	TableEntryVal* tv;
@@ -1461,7 +1419,7 @@ void TableVal::CheckExpireAttr(attr_tag at)
 		}
 	}
 
-int TableVal::Assign(Val* index, Val* new_val, Opcode op)
+int TableVal::Assign(Val* index, Val* new_val)
 	{
 	HashKey* k = ComputeHash(index);
 	if ( ! k )
@@ -1471,33 +1429,15 @@ int TableVal::Assign(Val* index, Val* new_val, Opcode op)
 		return 0;
 		}
 
-	return Assign(index, k, new_val, op);
+	return Assign(index, k, new_val);
 	}
 
-int TableVal::Assign(Val* index, HashKey* k, Val* new_val, Opcode op)
+int TableVal::Assign(Val* index, HashKey* k, Val* new_val)
 	{
 	int is_set = table_type->IsSet();
 
 	if ( (is_set && new_val) || (! is_set && ! new_val) )
 		InternalWarning("bad set/table in TableVal::Assign");
-
-	BroType* yt = Type()->AsTableType()->YieldType();
-
-	if ( yt && yt->Tag() == TYPE_TABLE &&
-	     new_val->AsTableVal()->FindAttr(ATTR_MERGEABLE) )
-		{
-		// Join two mergeable sets.
-		Val* old = Lookup(index, false);
-		if ( old && old->AsTableVal()->FindAttr(ATTR_MERGEABLE) )
-			{
-			if ( LoggingAccess() && op != OP_NONE )
-				StateAccess::Log(new StateAccess(OP_ASSIGN_IDX,
-						this, index, new_val, old));
-			new_val->AsTableVal()->AddTo(old->AsTableVal(), 0, false);
-			Unref(new_val);
-			return 1;
-			}
-		}
 
 	TableEntryVal* new_entry_val = new TableEntryVal(new_val);
 	HashKey k_copy(k->Key(), k->Size(), k->Hash());
@@ -1519,55 +1459,6 @@ int TableVal::Assign(Val* index, HashKey* k, Val* new_val, Opcode op)
 			}
 		else
 			subnets->Insert(index, new_entry_val);
-		}
-
-	if ( LoggingAccess() && op != OP_NONE )
-		{
-		Val* rec_index = 0;
-		if ( ! index )
-			index = rec_index = RecoverIndex(&k_copy);
-
-		if ( new_val )
-			{
-			// A table.
-			if ( new_val->IsMutableVal() )
-				new_val->AsMutableVal()->AddProperties(GetProperties());
-
-			bool unref_old_val = false;
-			Val* old_val = old_entry_val ?
-					old_entry_val->Value() : 0;
-			if ( op == OP_INCR && ! old_val )
-				// If it's an increment, somebody has already
-				// checked that the index is there.  If it's
-				// not, that can only be due to using the
-				// default.
-				{
-				old_val = Default(index);
-				unref_old_val = true;
-				}
-
-			assert(op != OP_INCR || old_val);
-
-			StateAccess::Log(
-				new StateAccess(
-					op == OP_INCR ?
-						OP_INCR_IDX : OP_ASSIGN_IDX,
-					this, index, new_val, old_val));
-
-			if ( unref_old_val )
-				Unref(old_val);
-			}
-
-		else
-			{
-			// A set.
-			StateAccess::Log(
-				new StateAccess(OP_ADD, this,
-						index, 0, 0));
-			}
-
-		if ( rec_index )
-			Unref(rec_index);
 		}
 
 	// Keep old expiration time if necessary.
@@ -1605,7 +1496,7 @@ int TableVal::AddTo(Val* val, int is_first_init, bool propagate_ops) const
 		return 0;
 		}
 
-	const PDict(TableEntryVal)* tbl = AsTable();
+	const PDict<TableEntryVal>* tbl = AsTable();
 	IterCookie* c = tbl->InitForIteration();
 
 	HashKey* k;
@@ -1623,15 +1514,13 @@ int TableVal::AddTo(Val* val, int is_first_init, bool propagate_ops) const
 
 		if ( type->IsSet() )
 			{
-			if ( ! t->Assign(v->Value(), k, 0,
-					propagate_ops ? OP_ASSIGN : OP_NONE) )
+			if ( ! t->Assign(v->Value(), k, 0) )
 				 return 0;
 			}
 		else
 			{
 			v->Ref();
-			if ( ! t->Assign(0, k, v->Value(),
-					propagate_ops ? OP_ASSIGN : OP_NONE) )
+			if ( ! t->Assign(0, k, v->Value()) )
 				 return 0;
 			}
 		}
@@ -1655,7 +1544,7 @@ int TableVal::RemoveFrom(Val* val) const
 		return 0;
 		}
 
-	const PDict(TableEntryVal)* tbl = AsTable();
+	const PDict<TableEntryVal>* tbl = AsTable();
 	IterCookie* c = tbl->InitForIteration();
 
 	HashKey* k;
@@ -1677,14 +1566,14 @@ TableVal* TableVal::Intersect(const TableVal* tv) const
 	{
 	TableVal* result = new TableVal(table_type);
 
-	const PDict(TableEntryVal)* t0 = AsTable();
-	const PDict(TableEntryVal)* t1 = tv->AsTable();
-	PDict(TableEntryVal)* t2 = result->AsNonConstTable();
+	const PDict<TableEntryVal>* t0 = AsTable();
+	const PDict<TableEntryVal>* t1 = tv->AsTable();
+	PDict<TableEntryVal>* t2 = result->AsNonConstTable();
 
 	// Figure out which is smaller; assign it to t1.
 	if ( t1->Length() > t0->Length() )
 		{ // Swap.
-		const PDict(TableEntryVal)* tmp = t1;
+		const PDict<TableEntryVal>* tmp = t1;
 		t1 = t0;
 		t0 = tmp;
 		}
@@ -1706,8 +1595,8 @@ TableVal* TableVal::Intersect(const TableVal* tv) const
 
 bool TableVal::EqualTo(const TableVal* tv) const
 	{
-	const PDict(TableEntryVal)* t0 = AsTable();
-	const PDict(TableEntryVal)* t1 = tv->AsTable();
+	const PDict<TableEntryVal>* t0 = AsTable();
+	const PDict<TableEntryVal>* t1 = tv->AsTable();
 
 	if ( t0->Length() != t1->Length() )
 		return false;
@@ -1733,8 +1622,8 @@ bool TableVal::EqualTo(const TableVal* tv) const
 
 bool TableVal::IsSubsetOf(const TableVal* tv) const
 	{
-	const PDict(TableEntryVal)* t0 = AsTable();
-	const PDict(TableEntryVal)* t1 = tv->AsTable();
+	const PDict<TableEntryVal>* t0 = AsTable();
+	const PDict<TableEntryVal>* t1 = tv->AsTable();
 
 	if ( t0->Length() > t1->Length() )
 		return false;
@@ -1848,7 +1737,20 @@ Val* TableVal::Default(Val* index)
 
 	if ( def_val->Type()->Tag() != TYPE_FUNC ||
 	     same_type(def_val->Type(), Type()->YieldType()) )
-		return def_attr->AttrExpr()->IsConst() ? def_val->Ref() : def_val->Clone();
+		{
+		if ( def_attr->AttrExpr()->IsConst() )
+			return def_val->Ref();
+
+		try
+			{
+			return def_val->Clone();
+			}
+		catch ( InterpreterException& e )
+			{ /* Already reported. */ }
+
+		Error("&default value for table is not clone-able");
+		return 0;
+		}
 
 	const Func* f = def_val->AsFunc();
 	val_list vl;
@@ -1857,8 +1759,8 @@ Val* TableVal::Default(Val* index)
 		{
 		const val_list* vl0 = index->AsListVal()->Vals();
 		vl = val_list(vl0->length());
-		loop_over_list(*vl0, i)
-			vl.append((*vl0)[i]->Ref());
+		for ( const auto& v : *vl0 )
+			vl.push_back(v->Ref());
 		}
 	else
 		{
@@ -1900,11 +1802,7 @@ Val* TableVal::Lookup(Val* index, bool use_default_val)
 		if ( v )
 			{
 			if ( attrs && attrs->FindAttr(ATTR_EXPIRE_READ) )
-					{
 					v->SetExpireAccess(network_time);
-					if ( LoggingAccess() && ExpirationEnabled() )
-						ReadOperation(index, v);
-					}
 
 			return v->Value() ? v->Value() : this;
 			}
@@ -1918,7 +1816,7 @@ Val* TableVal::Lookup(Val* index, bool use_default_val)
 		return def;
 		}
 
-	const PDict(TableEntryVal)* tbl = AsTable();
+	const PDict<TableEntryVal>* tbl = AsTable();
 
 	if ( tbl->Length() > 0 )
 		{
@@ -1931,11 +1829,7 @@ Val* TableVal::Lookup(Val* index, bool use_default_val)
 			if ( v )
 				{
 				if ( attrs && attrs->FindAttr(ATTR_EXPIRE_READ) )
-					{
 					v->SetExpireAccess(network_time);
-					if ( LoggingAccess() && ExpirationEnabled() )
-						ReadOperation(index, v);
-					}
 
 				return v->Value() ? v->Value() : this;
 				}
@@ -1989,11 +1883,7 @@ TableVal* TableVal::LookupSubnetValues(const SubNetVal* search)
 		if ( entry )
 			{
 			if ( attrs && attrs->FindAttr(ATTR_EXPIRE_READ) )
-				{
 				entry->SetExpireAccess(network_time);
-				if ( LoggingAccess() && ExpirationEnabled() )
-					ReadOperation(s, entry);
-				}
 			}
 
 		Unref(s); // assign does not consume index
@@ -2023,8 +1913,6 @@ bool TableVal::UpdateTimestamp(Val* index)
 		return false;
 
 	v->SetExpireAccess(network_time);
-	if ( LoggingAccess() && attrs->FindAttr(ATTR_EXPIRE_READ) )
-		ReadOperation(index, v);
 
 	return true;
 	}
@@ -2042,22 +1930,6 @@ Val* TableVal::Delete(const Val* index)
 
 	if ( subnets && ! subnets->Remove(index) )
 		reporter->InternalWarning("index not in prefix table");
-
-	if ( LoggingAccess() )
-		{
-		if ( v )
-			{
-			// A set.
-			Val* has_old_val = val_mgr->GetInt(1);
-			StateAccess::Log(
-				new StateAccess(OP_DEL, this, index,
-						has_old_val));
-			Unref(has_old_val);
-			}
-		else
-			StateAccess::Log(
-				new StateAccess(OP_DEL, this, index, 0));
-		}
 
 	delete k;
 	delete v;
@@ -2081,9 +1953,6 @@ Val* TableVal::Delete(const HashKey* k)
 
 	delete v;
 
-	if ( LoggingAccess() )
-		StateAccess::Log(new StateAccess(OP_DEL, this, k));
-
 	Modified();
 	return va;
 	}
@@ -2092,7 +1961,7 @@ ListVal* TableVal::ConvertToList(TypeTag t) const
 	{
 	ListVal* l = new ListVal(t);
 
-	const PDict(TableEntryVal)* tbl = AsTable();
+	const PDict<TableEntryVal>* tbl = AsTable();
 	IterCookie* c = tbl->InitForIteration();
 
 	HashKey* k;
@@ -2133,7 +2002,7 @@ ListVal* TableVal::ConvertToPureList() const
 
 void TableVal::Describe(ODesc* d) const
 	{
-	const PDict(TableEntryVal)* tbl = AsTable();
+	const PDict<TableEntryVal>* tbl = AsTable();
 	int n = tbl->Length();
 
 	if ( d->IsBinary() || d->IsPortable() )
@@ -2251,7 +2120,7 @@ int TableVal::ExpandCompoundAndInit(val_list* vl, int k, Val* new_val)
 	return 1;
 	}
 
-int TableVal::CheckAndAssign(Val* index, Val* new_val, Opcode op)
+int TableVal::CheckAndAssign(Val* index, Val* new_val)
 	{
 	Val* v = 0;
 	if ( subnets )
@@ -2263,7 +2132,29 @@ int TableVal::CheckAndAssign(Val* index, Val* new_val, Opcode op)
 	if ( v )
 		index->Warn("multiple initializations for index");
 
-	return Assign(index, new_val, op);
+	return Assign(index, new_val);
+	}
+
+void TableVal::InitDefaultFunc(Frame* f)
+	{
+	// Value aready initialized.
+	if ( def_val )
+		return;
+
+	Attr* def_attr = FindAttr(ATTR_DEFAULT);
+	if ( ! def_attr )
+		return;
+
+	BroType* ytype = Type()->YieldType();
+	BroType* dtype = def_attr->AttrExpr()->Type();
+
+	if ( dtype->Tag() == TYPE_RECORD && ytype->Tag() == TYPE_RECORD &&
+	     ! same_type(dtype, ytype) &&
+	     record_promotion_compatible(dtype->AsRecordType(),
+					 ytype->AsRecordType()) )
+		return; // TableVal::Default will handle this.
+
+	def_val = def_attr->AttrExpr()->Eval(f);
 	}
 
 void TableVal::InitTimer(double delay)
@@ -2277,7 +2168,7 @@ void TableVal::DoExpire(double t)
 	if ( ! type )
 		return; // FIX ME ###
 
-	PDict(TableEntryVal)* tbl = AsNonConstTable();
+	PDict<TableEntryVal>* tbl = AsNonConstTable();
 
 	double timeout = GetExpireTime();
 
@@ -2295,6 +2186,7 @@ void TableVal::DoExpire(double t)
 	HashKey* k = 0;
 	TableEntryVal* v = 0;
 	TableEntryVal* v_saved = 0;
+	bool modified = false;
 
 	for ( int i = 0; i < table_incremental_step &&
 			 (v = tbl->NextEntry(k, expire_cookie)); ++i )
@@ -2347,18 +2239,17 @@ void TableVal::DoExpire(double t)
 				Unref(index);
 				}
 
-			if ( LoggingAccess() )
-				StateAccess::Log(
-					new StateAccess(OP_EXPIRE, this, k));
-
 			tbl->RemoveEntry(k);
 			Unref(v->Value());
 			delete v;
-			Modified();
+			modified = true;
 			}
 
 		delete k;
 		}
+
+	if ( modified )
+		Modified();
 
 	if ( ! v )
 		{
@@ -2427,24 +2318,48 @@ double TableVal::CallExpireFunc(Val* idx)
 			return 0;
 			}
 
+		const Func* f = vf->AsFunc();
+		val_list vl { Ref() };
 
-		// Flatten lists of a single element.
-		if ( idx->Type()->Tag() == TYPE_LIST &&
-		     idx->AsListVal()->Length() == 1 )
+		const auto func_args = f->FType()->ArgTypes()->Types();
+
+		// backwards compatibility with idx: any idiom
+		bool any_idiom = func_args->length() == 2 && func_args->back()->Tag() == TYPE_ANY;
+
+		if ( idx->Type()->Tag() == TYPE_LIST )
 			{
-			Val* old = idx;
-			idx = idx->AsListVal()->Index(0);
-			idx->Ref();
-			Unref(old);
+			if ( ! any_idiom )
+				{
+				for ( const auto& v : *idx->AsListVal()->Vals() )
+					vl.append(v->Ref());
+
+				Unref(idx);
+				}
+			else
+				{
+				ListVal* idx_list = idx->AsListVal();
+				// Flatten if only one element
+				if ( idx_list->Length() == 1 )
+					{
+					Val* old = idx;
+					idx = idx_list->Index(0)->Ref();
+					Unref(old);
+					}
+
+				vl.append(idx);
+				}
 			}
+		else
+			vl.append(idx);
 
-		val_list vl{Ref(), idx};
-		Val* vs = vf->AsFunc()->Call(&vl);
+		Val* result = 0;
 
-		if ( vs )
+		result = f->Call(&vl);
+
+		if ( result )
 			{
-			secs = vs->AsInterval();
-			Unref(vs);
+			secs = result->AsInterval();
+			Unref(result);
 			}
 
 		Unref(vf);
@@ -2457,303 +2372,61 @@ double TableVal::CallExpireFunc(Val* idx)
 	return secs;
 	}
 
-void TableVal::ReadOperation(Val* index, TableEntryVal* v)
+Val* TableVal::DoClone(CloneState* state)
 	{
-	double timeout = GetExpireTime();
+	auto tv = new TableVal(table_type);
+	state->NewClone(this, tv);
 
-	if ( timeout < 0 )
-		// Skip in case of unset/invalid expiration value. If it's an
-		// error, it has been reported already.
-		return;
+	const PDict<TableEntryVal>* tbl = AsTable();
+	IterCookie* cookie = tbl->InitForIteration();
 
-	// In theory we need to only propagate one update per &read_expire
-	// interval to prevent peers from expiring intervals. To account for
-	// practical issues such as latency, we send one update every half
-	// &read_expire.
-	if ( network_time - v->LastReadUpdate() > timeout / 2 )
+	HashKey* key;
+	TableEntryVal* val;
+	while ( (val = tbl->NextEntry(key, cookie)) )
 		{
-		StateAccess::Log(new StateAccess(OP_READ_IDX, this, index));
-		v->SetLastReadUpdate(network_time);
-		}
-	}
-
-IMPLEMENT_SERIAL(TableVal, SER_TABLE_VAL);
-
-// This is getting rather complex due to the ability to suspend even within
-// deeply-nested values.
-bool TableVal::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE_WITH_SUSPEND(SER_TABLE_VAL, MutableVal);
-
-	// The current state of the serialization.
-	struct State {
-		IterCookie* c;
-		TableEntryVal* v;	// current value
-		bool did_index;	// already wrote the val's index
-	}* state = 0;
-
-	PDict(TableEntryVal)* tbl =
-		const_cast<TableVal*>(this)->AsNonConstTable();
-
-	if ( info->cont.NewInstance() )
-		{
-		// For simplicity, we disable suspension for the objects
-		// serialized here.  (In fact we know that *currently*
-		// they won't even try).
-		DisableSuspend suspend(info);
-
-		state = new State;
-		state->c = tbl->InitForIteration();
-		tbl->MakeRobustCookie(state->c);
-		state->v = 0;
-		state->did_index = false;
-		info->s->WriteOpenTag(table_type->IsSet() ? "set" : "table");
-
-		SERIALIZE_OPTIONAL(attrs);
-		SERIALIZE_OPTIONAL(expire_time);
-		SERIALIZE_OPTIONAL(expire_func);
-
-		// Make sure nobody kills us in between.
-		const_cast<TableVal*>(this)->Ref();
-		}
-
-	else if ( info->cont.ChildSuspended() )
-		state = (State*) info->cont.RestoreState();
-
-	else if ( info->cont.Resuming() )
-		{
-		info->cont.Resume();
-		state = (State*) info->cont.RestoreState();
-		}
-	else
-		reporter->InternalError("unknown continuation state");
-
-	HashKey* k = 0;
-	int count = 0;
-
-	assert((!info->cont.ChildSuspended()) || state->v);
-
-	while ( true )
-		{
-		if ( ! state->v )
-			{
-			state->v = tbl->NextEntry(k, state->c);
-			if ( ! state->c )
-				{
-				// No next one.
-				if ( ! SERIALIZE(false) )
-					{
-					delete k;
-					return false;
-					}
-
-				break;
-				}
-
-			// There's a value coming.
-			if ( ! SERIALIZE(true) )
-				{
-				delete k;
-				return false;
-				}
-
-			if ( state->v->Value() )
-				state->v->Ref();
-
-			state->did_index = false;
-			}
-
-		// Serialize index.
-		if ( k && ! state->did_index )
-			{
-			// Indices are rather small, so we disable suspension
-			// here again.
-			DisableSuspend suspend(info);
-			info->s->WriteOpenTag("key");
-			ListVal* index = table_hash->RecoverVals(k)->AsListVal();
-			delete k;
-
-			if ( ! index->Serialize(info) )
-				return false;
-
-			Unref(index);
-			info->s->WriteCloseTag("key");
-
-			state->did_index = true;
-
-			// Start serializing data.
-			if ( ! type->IsSet() )
-				info->s->WriteOpenTag("value");
-			}
-
-		if ( ! type->IsSet() )
-			{
-			info->cont.SaveState(state);
-			info->cont.SaveContext();
-			bool result = state->v->val->Serialize(info);
-			info->cont.RestoreContext();
-
-			if ( ! result )
-				return false;
-
-			if ( info->cont.ChildSuspended() )
-				return true;
-			}
-
-		double eat = state->v->ExpireAccessTime();
-
-		if ( ! (SERIALIZE(state->v->last_access_time) &&
-			SERIALIZE(eat)) )
-			return false;
-
-		info->s->WriteCloseTag("value");
-
-		if ( state->v->Value() )
-			state->v->Unref();
-		state->v = 0; // Next value.
-
-		// Suspend if we've done enough for now (which means we
-		// have serialized more than table_incremental_step entries
-		// in a row; if an entry has suspended itself in between,
-		// we start counting from 0).
-		if ( info->may_suspend && ++count > table_incremental_step)
-			{
-			info->cont.SaveState(state);
-			info->cont.Suspend();
-			reporter->Info("TableVals serialization suspended right in the middle.");
-			return true;
-			}
-		}
-
-	info->s->WriteCloseTag(table_type->IsSet() ? "set" : "table");
-	delete state;
-
-	Unref(const_cast<TableVal*>(this));
-	return true;
-	}
-
-bool TableVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(MutableVal);
-
-	Init((TableType*) type);
-
-	UNSERIALIZE_OPTIONAL(attrs, Attributes::Unserialize(info));
-	UNSERIALIZE_OPTIONAL(expire_time, Expr::Unserialize(info));
-	UNSERIALIZE_OPTIONAL(expire_func, Expr::Unserialize(info));
-
-	while ( true )
-		{
-		// Anymore?
-		bool next;
-		if ( ! UNSERIALIZE(&next) )
-			return false;
-
-		if ( ! next )
-			break;
-
-		// Unserialize index.
-		ListVal* index =
-			(ListVal*) Val::Unserialize(info, table_type->Indices());
-		if ( ! index )
-			return false;
-
-		// Unserialize data.
-		Val* entry;
-		if ( ! table_type->IsSet() )
-			{
-			entry = Val::Unserialize(info, type->YieldType());
-			if ( ! entry )
-				return false;
-			}
-		else
-			entry = 0;
-
-		TableEntryVal* entry_val = new TableEntryVal(entry);
-
-		double eat;
-
-		if ( ! UNSERIALIZE(&entry_val->last_access_time) ||
-		     ! UNSERIALIZE(&eat) )
-			{
-			entry_val->Unref();
-			delete entry_val;
-			return false;
-			}
-
-		entry_val->SetExpireAccess(eat);
-
-		HashKey* key = ComputeHash(index);
-		TableEntryVal* old_entry_val =
-			AsNonConstTable()->Insert(key, entry_val);
-		assert(! old_entry_val);
-
-		delete key;
+		TableEntryVal* nval = val->Clone(state);
+		tv->AsNonConstTable()->Insert(key, nval);
 
 		if ( subnets )
-			subnets->Insert(index, entry_val);
+			{
+			Val* idx = RecoverIndex(key);
+			tv->subnets->Insert(idx, nval);
+			Unref(idx);
+			}
 
-		Unref(index);
+		delete key;
 		}
 
-	// If necessary, activate the expire timer.
 	if ( attrs )
 		{
-		CheckExpireAttr(ATTR_EXPIRE_READ);
-		CheckExpireAttr(ATTR_EXPIRE_WRITE);
-		CheckExpireAttr(ATTR_EXPIRE_CREATE);
+		::Ref(attrs);
+		tv->attrs = attrs;
 		}
 
-	return true;
-	}
+	if ( expire_time )
+		{
+		tv->expire_time = expire_time->Ref();
 
-bool TableVal::AddProperties(Properties arg_props)
-	{
-	if ( ! MutableVal::AddProperties(arg_props) )
-		return false;
+		// As network_time is not necessarily initialized yet, we set
+		// a timer which fires immediately.
+		timer = new TableValTimer(this, 1);
+		timer_mgr->Add(timer);
+		}
 
-	if ( Type()->IsSet() || ! RecursiveProps(arg_props) )
-		return true;
+	if ( expire_func )
+		tv->expire_func = expire_func->Ref();
 
-	// For a large table, this could get expensive. So, let's hope
-	// that nobody creates such a table *before* making it persistent
-	// (for example by inserting it into another table).
-	TableEntryVal* v;
-	PDict(TableEntryVal)* tbl = val.table_val;
-	IterCookie* c = tbl->InitForIteration();
-	while ( (v = tbl->NextEntry(c)) )
-		if ( v->Value()->IsMutableVal() )
-			v->Value()->AsMutableVal()->AddProperties(RecursiveProps(arg_props));
+	if ( def_val )
+		tv->def_val = def_val->Clone();
 
-	return true;
-	}
-
-bool TableVal::RemoveProperties(Properties arg_props)
-	{
-	if ( ! MutableVal::RemoveProperties(arg_props) )
-		return false;
-
-	if ( Type()->IsSet() || ! RecursiveProps(arg_props) )
-		return true;
-
-	// For a large table, this could get expensive.  So, let's hope
-	// that nobody creates such a table *before* making it persistent
-	// (for example by inserting it into another table).
-	TableEntryVal* v;
-	PDict(TableEntryVal)* tbl = val.table_val;
-	IterCookie* c = tbl->InitForIteration();
-	while ( (v = tbl->NextEntry(c)) )
-		if ( v->Value()->IsMutableVal() )
-			v->Value()->AsMutableVal()->RemoveProperties(RecursiveProps(arg_props));
-
-	return true;
+	return tv;
 	}
 
 unsigned int TableVal::MemoryAllocation() const
 	{
 	unsigned int size = 0;
 
-	PDict(TableEntryVal)* v = val.table_val;
+	PDict<TableEntryVal>* v = val.table_val;
 	IterCookie* c = v->InitForIteration();
 
 	TableEntryVal* tv;
@@ -2770,21 +2443,29 @@ unsigned int TableVal::MemoryAllocation() const
 
 vector<RecordVal*> RecordVal::parse_time_records;
 
-RecordVal::RecordVal(RecordType* t) : MutableVal(t)
+RecordVal::RecordVal(RecordType* t, bool init_fields) : Val(t)
 	{
-	origin = 0;
-	record_type = t;
-	int n = record_type->NumFields();
+	origin = nullptr;
+	int n = t->NumFields();
 	val_list* vl = val.val_list_val = new val_list(n);
+
+	if ( is_parsing )
+		{
+		parse_time_records.emplace_back(this);
+		Ref();
+		}
+
+	if ( ! init_fields )
+		return;
 
 	// Initialize to default values from RecordType (which are nil
 	// by default).
 	for ( int i = 0; i < n; ++i )
 		{
-		Attributes* a = record_type->FieldDecl(i)->attrs;
+		Attributes* a = t->FieldDecl(i)->attrs;
 		Attr* def_attr = a ? a->FindAttr(ATTR_DEFAULT) : 0;
 		Val* def = def_attr ? def_attr->AttrExpr()->Eval(0) : 0;
-		BroType* type = record_type->FieldDecl(i)->type;
+		BroType* type = t->FieldDecl(i)->type;
 
 		if ( def && type->Tag() == TYPE_RECORD &&
 		     def->Type()->Tag() == TYPE_RECORD &&
@@ -2812,15 +2493,9 @@ RecordVal::RecordVal(RecordType* t) : MutableVal(t)
 				def = new VectorVal(type->AsVectorType());
 			}
 
-		vl->append(def ? def->Ref() : 0);
+		vl->push_back(def ? def->Ref() : 0);
 
 		Unref(def);
-
-		if ( is_parsing )
-			{
-			parse_time_records.emplace_back(this);
-			Ref();
-			}
 		}
 	}
 
@@ -2829,44 +2504,9 @@ RecordVal::~RecordVal()
 	delete_vals(AsNonConstRecord());
 	}
 
-void RecordVal::Assign(int field, Val* new_val, Opcode op)
+void RecordVal::Assign(int field, Val* new_val)
 	{
-	if ( new_val && Lookup(field) &&
-	     record_type->FieldType(field)->Tag() == TYPE_TABLE &&
-	     new_val->AsTableVal()->FindAttr(ATTR_MERGEABLE) )
-		{
-		// Join two mergeable sets.
-		Val* old = Lookup(field);
-		if ( old->AsTableVal()->FindAttr(ATTR_MERGEABLE) )
-			{
-			if ( LoggingAccess() && op != OP_NONE )
-				{
-				StringVal* index = new StringVal(Type()->AsRecordType()->FieldName(field));
-				StateAccess::Log(new StateAccess(OP_ASSIGN_IDX, this, index, new_val, old));
-				Unref(index);
-				}
-
-			new_val->AsTableVal()->AddTo(old->AsTableVal(), 0, false);
-			Unref(new_val);
-			return;
-			}
-		}
-
 	Val* old_val = AsNonConstRecord()->replace(field, new_val);
-
-	if ( LoggingAccess() && op != OP_NONE )
-		{
-		if ( new_val && new_val->IsMutableVal() )
-			new_val->AsMutableVal()->AddProperties(GetProperties());
-
-		StringVal* index = new StringVal(Type()->AsRecordType()->FieldName(field));
-		StateAccess::Log(
-			new StateAccess(
-				op == OP_INCR ? OP_INCR_IDX : OP_ASSIGN_IDX,
-				this, index, new_val, old_val));
-		Unref(index); // The logging may keep a cached copy.
-		}
-
 	Unref(old_val);
 	Modified();
 	}
@@ -2883,7 +2523,7 @@ Val* RecordVal::LookupWithDefault(int field) const
 	if ( val )
 		return val->Ref();
 
-	return record_type->FieldDefault(field);
+	return Type()->AsRecordType()->FieldDefault(field);
 	}
 
 void RecordVal::ResizeParseTimeRecords()
@@ -2891,7 +2531,7 @@ void RecordVal::ResizeParseTimeRecords()
 	for ( auto& rv : parse_time_records )
 		{
 		auto vs = rv->val.val_list_val;
-		auto rt = rv->record_type;
+		auto rt = rv->Type()->AsRecordType();
 		auto current_length = vs->length();
 		auto required_length = rt->NumFields();
 
@@ -2911,7 +2551,7 @@ void RecordVal::ResizeParseTimeRecords()
 
 Val* RecordVal::Lookup(const char* field, bool with_default) const
 	{
-	int idx = record_type->FieldOffset(field);
+	int idx = Type()->AsRecordType()->FieldOffset(field);
 
 	if ( idx < 0 )
 		reporter->InternalError("missing record field: %s", field);
@@ -2996,6 +2636,7 @@ void RecordVal::Describe(ODesc* d) const
 	{
 	const val_list* vl = AsRecord();
 	int n = vl->length();
+	auto record_type = Type()->AsRecordType();
 
 	if ( d->IsBinary() || d->IsPortable() )
 		{
@@ -3032,6 +2673,7 @@ void RecordVal::DescribeReST(ODesc* d) const
 	{
 	const val_list* vl = AsRecord();
 	int n = vl->length();
+	auto record_type = Type()->AsRecordType();
 
 	d->Add("{");
 	d->PushIndent();
@@ -3056,105 +2698,33 @@ void RecordVal::DescribeReST(ODesc* d) const
 	d->Add("}");
 	}
 
-IMPLEMENT_SERIAL(RecordVal, SER_RECORD_VAL);
-
-bool RecordVal::DoSerialize(SerialInfo* info) const
+Val* RecordVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_RECORD_VAL, MutableVal);
+	// We set origin to 0 here.  Origin only seems to be used for exactly one
+	// purpose - to find the connection record that is associated with a
+	// record. As we cannot guarantee that it will ber zeroed out at the
+	// approproate time (as it seems to be guaranteed for the original record)
+	// we don't touch it.
+	auto rv = new RecordVal(Type()->AsRecordType(), false);
+	rv->origin = nullptr;
+	state->NewClone(this, rv);
 
-	// We could use the type name as a tag here.
-	info->s->WriteOpenTag("record");
-
-	// We don't need to serialize record_type as it's simply the
-	// casted table_type.
-	// FIXME: What about origin?
-
-	if ( ! SERIALIZE(val.val_list_val->length()) )
-		return false;
-
-	loop_over_list(*val.val_list_val, i)
+	for ( const auto& vlv : *val.val_list_val )
 		{
-		info->s->WriteOpenTag(record_type->FieldName(i));
-		Val* v = (*val.val_list_val)[i];
-		SERIALIZE_OPTIONAL(v);
-		info->s->WriteCloseTag(record_type->FieldName(i));
+		Val* v = vlv ? vlv->Clone(state) : nullptr;
+  		rv->val.val_list_val->push_back(v);
 		}
 
-	info->s->WriteCloseTag("record");
-
-	return true;
-	}
-
-bool RecordVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(MutableVal);
-
-	record_type = (RecordType*) type;
-	origin = 0;
-
-	int len;
-	if ( ! UNSERIALIZE(&len) )
-		{
-		val.val_list_val = new val_list;
-		return false;
-		}
-
-	val.val_list_val = new val_list(len);
-
-	for ( int i = 0; i < len; ++i )
-		{
-		Val* v;
-		UNSERIALIZE_OPTIONAL(v, Val::Unserialize(info));
-		AsNonConstRecord()->append(v);	// correct for v==0, too.
-		}
-
-	return true;
-	}
-
-bool RecordVal::AddProperties(Properties arg_props)
-	{
-	if ( ! MutableVal::AddProperties(arg_props) )
-		return false;
-
-	if ( ! RecursiveProps(arg_props) )
-		return true;
-
-	loop_over_list(*val.val_list_val, i)
-		{
-		Val* v = (*val.val_list_val)[i];
-		if ( v && v->IsMutableVal() )
-			v->AsMutableVal()->AddProperties(RecursiveProps(arg_props));
-		}
-	return true;
-	}
-
-
-bool RecordVal::RemoveProperties(Properties arg_props)
-	{
-	if ( ! MutableVal::RemoveProperties(arg_props) )
-		return false;
-
-	if ( ! RecursiveProps(arg_props) )
-		return true;
-
-	loop_over_list(*val.val_list_val, i)
-		{
-		Val* v = (*val.val_list_val)[i];
-		if ( v && v->IsMutableVal() )
-			v->AsMutableVal()->RemoveProperties(RecursiveProps(arg_props));
-		}
-	return true;
+	return rv;
 	}
 
 unsigned int RecordVal::MemoryAllocation() const
 	{
 	unsigned int size = 0;
-
 	const val_list* vl = AsRecord();
 
-	loop_over_list(*vl, i)
+	for ( const auto& v : *vl )
 		{
-		Val* v = (*vl)[i];
 		if ( v )
 		    size += v->MemoryAllocation();
 		}
@@ -3172,21 +2742,13 @@ void EnumVal::ValDescribe(ODesc* d) const
 	d->Add(ename);
 	}
 
-IMPLEMENT_SERIAL(EnumVal, SER_ENUM_VAL);
-
-bool EnumVal::DoSerialize(SerialInfo* info) const
+Val* EnumVal::DoClone(CloneState* state)
 	{
-	DO_SERIALIZE(SER_ENUM_VAL, Val);
-	return true;
+	// Immutable.
+	return Ref();
 	}
 
-bool EnumVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-	return true;
-	}
-
-VectorVal::VectorVal(VectorType* t) : MutableVal(t)
+VectorVal::VectorVal(VectorType* t) : Val(t)
 	{
 	vector_type = t->Ref()->AsVectorType();
 	val.vector_val = new vector<Val*>();
@@ -3202,7 +2764,7 @@ VectorVal::~VectorVal()
 	delete val.vector_val;
 	}
 
-bool VectorVal::Assign(unsigned int index, Val* element, Opcode op)
+bool VectorVal::Assign(unsigned int index, Val* element)
 	{
 	if ( element &&
 	     ! same_type(element->Type(), vector_type->YieldType(), 0) )
@@ -3211,49 +2773,12 @@ bool VectorVal::Assign(unsigned int index, Val* element, Opcode op)
 		return false;
 		}
 
-	BroType* yt = Type()->AsVectorType()->YieldType();
-
-	if ( yt && yt->Tag() == TYPE_TABLE &&
-	     element->AsTableVal()->FindAttr(ATTR_MERGEABLE) )
-		{
-		// Join two mergeable sets.
-		Val* old = Lookup(index);
-		if ( old && old->AsTableVal()->FindAttr(ATTR_MERGEABLE) )
-			{
-			if ( LoggingAccess() && op != OP_NONE )
-				{
-				Val* ival = val_mgr->GetCount(index);
-				StateAccess::Log(new StateAccess(OP_ASSIGN_IDX,
-						this, ival, element,
-						(*val.vector_val)[index]));
-				Unref(ival);
-				}
-
-			element->AsTableVal()->AddTo(old->AsTableVal(), 0, false);
-			Unref(element);
-			return true;
-			}
-		}
-
 	Val* val_at_index = 0;
 
 	if ( index < val.vector_val->size() )
 		val_at_index = (*val.vector_val)[index];
 	else
 		val.vector_val->resize(index + 1);
-
-	if ( LoggingAccess() && op != OP_NONE )
-		{
-		if ( element->IsMutableVal() )
-			element->AsMutableVal()->AddProperties(GetProperties());
-
-		Val* ival = val_mgr->GetCount(index);
-
-		StateAccess::Log(new StateAccess(op == OP_INCR ?
-				OP_INCR_IDX : OP_ASSIGN_IDX,
-				this, ival, element, val_at_index));
-		Unref(ival);
-		}
 
 	Unref(val_at_index);
 
@@ -3275,6 +2800,45 @@ bool VectorVal::AssignRepeat(unsigned int index, unsigned int how_many,
 		if ( ! Assign(i, element->Ref() ) )
 			return false;
 
+	return true;
+	}
+
+bool VectorVal::Insert(unsigned int index, Val* element)
+	{
+	if ( element &&
+	     ! same_type(element->Type(), vector_type->YieldType(), 0) )
+		{
+		Unref(element);
+		return false;
+		}
+
+	vector<Val*>::iterator it;
+
+	if ( index < val.vector_val->size() )
+		it = std::next(val.vector_val->begin(), index);
+	else
+		it = val.vector_val->end();
+
+	// Note: we do *not* Ref() the element, if any, at this point.
+	// AssignExpr::Eval() already does this; other callers must remember
+	// to do it similarly.
+	val.vector_val->insert(it, element);
+
+	Modified();
+	return true;
+	}
+
+bool VectorVal::Remove(unsigned int index)
+	{
+	if ( index >= val.vector_val->size() )
+		return false;
+
+	Val* val_at_index = (*val.vector_val)[index];
+	auto it = std::next(val.vector_val->begin(), index);
+	val.vector_val->erase(it);
+	Unref(val_at_index);
+
+	Modified();
 	return true;
 	}
 
@@ -3327,79 +2891,19 @@ unsigned int VectorVal::ResizeAtLeast(unsigned int new_num_elements)
 	 return Resize(new_num_elements);
 	 }
 
-bool VectorVal::AddProperties(Properties arg_props)
+Val* VectorVal::DoClone(CloneState* state)
 	{
-	if ( ! MutableVal::AddProperties(arg_props) )
-		return false;
-
-	if ( ! RecursiveProps(arg_props) )
-		return true;
-
-	for ( unsigned int i = 0; i < val.vector_val->size(); ++i )
-		if ( (*val.vector_val)[i]->IsMutableVal() )
-			(*val.vector_val)[i]->AsMutableVal()->AddProperties(RecursiveProps(arg_props));
-
-	return true;
-	}
-
-bool VectorVal::RemoveProperties(Properties arg_props)
-	{
-	if ( ! MutableVal::RemoveProperties(arg_props) )
-		return false;
-
-	if ( ! RecursiveProps(arg_props) )
-		return true;
-
-	for ( unsigned int i = 0; i < val.vector_val->size(); ++i )
-		if ( (*val.vector_val)[i]->IsMutableVal() )
-			(*val.vector_val)[i]->AsMutableVal()->RemoveProperties(RecursiveProps(arg_props));
-
-	return true;
-	}
-
-IMPLEMENT_SERIAL(VectorVal, SER_VECTOR_VAL);
-
-bool VectorVal::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_VECTOR_VAL, MutableVal);
-
-	info->s->WriteOpenTag("vector");
-
-	if ( ! SERIALIZE(unsigned(val.vector_val->size())) )
-		return false;
+	auto vv = new VectorVal(vector_type);
+	vv->val.vector_val->reserve(val.vector_val->size());
+	state->NewClone(this, vv);
 
 	for ( unsigned int i = 0; i < val.vector_val->size(); ++i )
 		{
-		info->s->WriteOpenTag("value");
-		Val* v = (*val.vector_val)[i];
-		SERIALIZE_OPTIONAL(v);
-		info->s->WriteCloseTag("value");
+		auto v = (*val.vector_val)[i]->Clone(state);
+		vv->val.vector_val->push_back(v);
 		}
 
-	info->s->WriteCloseTag("vector");
-
-	return true;
-	}
-
-bool VectorVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(MutableVal);
-
-	val.vector_val = new vector<Val*>;
-	vector_type = type->Ref()->AsVectorType();
-
-	int len;
-	if ( ! UNSERIALIZE(&len) )
-		return false;
-
-	for ( int i = 0; i < len; ++i )
-		{
-		Val* v;
-		UNSERIALIZE_OPTIONAL(v, Val::Unserialize(info, TYPE_ANY)); // accept any type
-		Assign(i, v);
-		}
-
-	return true;
+	return vv;
 	}
 
 void VectorVal::ValDescribe(ODesc* d) const
@@ -3421,29 +2925,7 @@ void VectorVal::ValDescribe(ODesc* d) const
 	d->Add("]");
 	}
 
-OpaqueVal::OpaqueVal(OpaqueType* t) : Val(t)
-	{
-	}
-
-OpaqueVal::~OpaqueVal()
-	{
-	}
-
-IMPLEMENT_SERIAL(OpaqueVal, SER_OPAQUE_VAL);
-
-bool OpaqueVal::DoSerialize(SerialInfo* info) const
-	{
-	DO_SERIALIZE(SER_OPAQUE_VAL, Val);
-	return true;
-	}
-
-bool OpaqueVal::DoUnserialize(UnserialInfo* info)
-	{
-	DO_UNSERIALIZE(Val);
-	return true;
-	}
-
-Val* check_and_promote(Val* v, const BroType* t, int is_init)
+Val* check_and_promote(Val* v, const BroType* t, int is_init, const Location* expr_location)
 	{
 	if ( ! v )
 		return 0;
@@ -3467,7 +2949,7 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init)
 		if ( same_type(t, vt, is_init) )
 			return v;
 
-		t->Error("type clash", v);
+		t->Error("type clash", v, 0, expr_location);
 		Unref(v);
 		return 0;
 		}
@@ -3476,9 +2958,9 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init)
 	     (! IsArithmetic(v_tag) || t_tag != TYPE_TIME || ! v->IsZero()) )
 		{
 		if ( t_tag == TYPE_LIST || v_tag == TYPE_LIST )
-			t->Error("list mixed with scalar", v);
+			t->Error("list mixed with scalar", v, 0, expr_location);
 		else
-			t->Error("arithmetic mixed with non-arithmetic", v);
+			t->Error("arithmetic mixed with non-arithmetic", v, 0, expr_location);
 		Unref(v);
 		return 0;
 		}
@@ -3486,12 +2968,12 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init)
 	if ( v_tag == t_tag )
 		return v;
 
-	if ( t_tag != TYPE_TIME )
+	if ( t_tag != TYPE_TIME && ! BothArithmetic(t_tag, v_tag) )
 		{
 		TypeTag mt = max_type(t_tag, v_tag);
 		if ( mt != t_tag )
 			{
-			t->Error("over-promotion of arithmetic value", v);
+			t->Error("over-promotion of arithmetic value", v, 0, expr_location);
 			Unref(v);
 			return 0;
 			}
@@ -3508,7 +2990,13 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init)
 	Val* promoted_v;
 	switch ( it ) {
 	case TYPE_INTERNAL_INT:
-		if ( t_tag == TYPE_INT )
+		if ( ( vit == TYPE_INTERNAL_UNSIGNED || vit == TYPE_INTERNAL_DOUBLE ) && Val::WouldOverflow(vt, t, v) )
+			{
+			t->Error("overflow promoting from unsigned/double to signed arithmetic value", v, 0, expr_location);
+			Unref(v);
+			return 0;
+			}
+		else if ( t_tag == TYPE_INT )
 			promoted_v = val_mgr->GetInt(v->CoerceToInt());
 		else if ( t_tag == TYPE_BOOL )
 			promoted_v = val_mgr->GetBool(v->CoerceToInt());
@@ -3522,7 +3010,13 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init)
 		break;
 
 	case TYPE_INTERNAL_UNSIGNED:
-		if ( t_tag == TYPE_COUNT || t_tag == TYPE_COUNTER )
+		if ( ( vit == TYPE_INTERNAL_DOUBLE || vit == TYPE_INTERNAL_INT) && Val::WouldOverflow(vt, t, v) )
+			{
+			t->Error("overflow promoting from signed/double to unsigned arithmetic value", v, 0, expr_location);
+			Unref(v);
+			return 0;
+			}
+		else if ( t_tag == TYPE_COUNT || t_tag == TYPE_COUNTER )
 			promoted_v = val_mgr->GetCount(v->CoerceToUnsigned());
 		else // port
 			{
@@ -3608,8 +3102,8 @@ void delete_vals(val_list* vals)
 	{
 	if ( vals )
 		{
-		loop_over_list(*vals, i)
-			Unref((*vals)[i]);
+		for ( const auto& val : *vals )
+			Unref(val);
 		delete vals;
 		}
 	}
@@ -3735,7 +3229,7 @@ StringVal* ValManager::GetEmptyString() const
 	return empty_string;
 	}
 
-PortVal* ValManager::GetPort(uint32 port_num, TransportProto port_type) const
+PortVal* ValManager::GetPort(uint32_t port_num, TransportProto port_type) const
 	{
 	if ( port_num >= 65536 )
 		{
@@ -3748,7 +3242,7 @@ PortVal* ValManager::GetPort(uint32 port_num, TransportProto port_type) const
 	return rval;
 	}
 
-PortVal* ValManager::GetPort(uint32 port_num) const
+PortVal* ValManager::GetPort(uint32_t port_num) const
 	{
 	auto mask = port_num & PORT_SPACE_MASK;
 	port_num &= ~PORT_SPACE_MASK;

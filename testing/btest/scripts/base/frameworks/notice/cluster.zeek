@@ -2,9 +2,9 @@
 # @TEST-PORT: BROKER_PORT2
 # @TEST-PORT: BROKER_PORT3
 #
-# @TEST-EXEC: btest-bg-run manager-1 BROPATH=$BROPATH:.. CLUSTER_NODE=manager-1 bro %INPUT
-# @TEST-EXEC: btest-bg-run proxy-1   BROPATH=$BROPATH:.. CLUSTER_NODE=proxy-1 bro %INPUT
-# @TEST-EXEC: btest-bg-run worker-1  BROPATH=$BROPATH:.. CLUSTER_NODE=worker-1 bro %INPUT
+# @TEST-EXEC: btest-bg-run manager-1 ZEEKPATH=$ZEEKPATH:.. CLUSTER_NODE=manager-1 zeek %INPUT
+# @TEST-EXEC: btest-bg-run proxy-1   ZEEKPATH=$ZEEKPATH:.. CLUSTER_NODE=proxy-1 zeek %INPUT
+# @TEST-EXEC: btest-bg-run worker-1  ZEEKPATH=$ZEEKPATH:.. CLUSTER_NODE=worker-1 zeek %INPUT
 # @TEST-EXEC: btest-bg-wait 20
 # @TEST-EXEC: btest-diff manager-1/notice.log
 
@@ -33,9 +33,15 @@ event delayed_notice()
 		NOTICE([$note=Test_Notice, $msg="test notice!"]);
 	}
 
+event terminate_me()
+	{
+	terminate();
+	}
+
 event ready()
 	{
 	schedule 1secs { delayed_notice() };
+	schedule 2secs { terminate_me() };
 	}
 
 @if ( Cluster::local_node_type() == Cluster::MANAGER )
@@ -50,7 +56,7 @@ event Cluster::node_up(name: string, id: string)
 		Broker::publish(Cluster::worker_topic, ready);
 	}
 
-event Notice::log_notice(rec: Notice::Info)
+event Cluster::node_down(name: string, id: string)
 	{
 	terminate();
 	}

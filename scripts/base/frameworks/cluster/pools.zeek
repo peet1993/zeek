@@ -60,17 +60,17 @@ export {
 
 	## The specification for :zeek:see:`Cluster::proxy_pool`.
 	global proxy_pool_spec: PoolSpec =
-		PoolSpec($topic = "bro/cluster/pool/proxy",
+		PoolSpec($topic = "zeek/cluster/pool/proxy",
 				 $node_type = Cluster::PROXY) &redef;
 
 	## The specification for :zeek:see:`Cluster::worker_pool`.
 	global worker_pool_spec: PoolSpec =
-		PoolSpec($topic = "bro/cluster/pool/worker",
+		PoolSpec($topic = "zeek/cluster/pool/worker",
 				 $node_type = Cluster::WORKER) &redef;
 
 	## The specification for :zeek:see:`Cluster::logger_pool`.
 	global logger_pool_spec: PoolSpec =
-		PoolSpec($topic = "bro/cluster/pool/logger",
+		PoolSpec($topic = "zeek/cluster/pool/logger",
 				 $node_type = Cluster::LOGGER) &redef;
 
 	## A pool containing all the proxy nodes of a cluster.
@@ -351,7 +351,7 @@ event zeek_init() &priority=-5
 		return;
 
 	# Sorting now ensures the node distribution process is stable even if
-	# there's a change in the order of time-of-registration between Bro runs.
+	# there's a change in the order of time-of-registration between Zeek runs.
 	sort(registered_pools, pool_sorter);
 
 	pool_eligibility[Cluster::WORKER] =

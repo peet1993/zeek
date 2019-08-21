@@ -11,12 +11,12 @@
 #include "threading/Manager.h"
 #include "broker/Manager.h"
 
-uint64 killed_by_inactivity = 0;
+uint64_t killed_by_inactivity = 0;
 
-uint64 tot_ack_events = 0;
-uint64 tot_ack_bytes = 0;
-uint64 tot_gap_events = 0;
-uint64 tot_gap_bytes = 0;
+uint64_t tot_ack_events = 0;
+uint64_t tot_ack_bytes = 0;
+uint64_t tot_gap_events = 0;
+uint64_t tot_gap_bytes = 0;
 
 
 class ProfileTimer : public Timer {
@@ -79,7 +79,7 @@ void ProfileLogger::Log()
 	struct timeval tv_utime = r.ru_utime;
 	struct timeval tv_stime = r.ru_stime;
 
-	uint64 total, malloced;
+	uint64_t total, malloced;
 	get_memory_usage(&total, &malloced);
 
 	static unsigned int first_total = 0;
@@ -239,7 +239,7 @@ void ProfileLogger::Log()
 
 	// Script-level state.
 	unsigned int size, mem = 0;
-	PDict(ID)* globals = global_scope()->Vars();
+	const auto& globals = global_scope()->Vars();
 
 	if ( expensive )
 		{
@@ -249,13 +249,13 @@ void ProfileLogger::Log()
 		file->Write(fmt("%.06f Global_sizes > 100k: %dK\n",
 				network_time, mem / 1024));
 
-		ID* id;
-		IterCookie* c = globals->InitForIteration();
+		for ( const auto& global : globals )
+			{
+			ID* id = global.second;
 
-		while ( (id = globals->NextEntry(c)) )
 			// We don't show/count internal globals as they are always
 			// contained in some other global user-visible container.
-			if ( id->HasVal() && ! id->IsInternalGlobal() )
+			if ( id->HasVal() )
 				{
 				Val* v = id->ID_Val();
 
@@ -298,6 +298,7 @@ void ProfileLogger::Log()
 						file->Write("\n");
 					}
 				}
+			}
 
 		file->Write(fmt("%.06f Global_sizes total: %dK\n",
 				network_time, mem / 1024));
@@ -460,7 +461,7 @@ void PacketProfiler::ProfilePkt(double t, unsigned int bytes)
 		double curr_Rtime =
 			ptimestamp.tv_sec + ptimestamp.tv_usec / 1e6;
 
-		uint64 curr_mem;
+		uint64_t curr_mem;
 		get_memory_usage(&curr_mem, 0);
 
 		file->Write(fmt("%.06f %.03f %" PRIu64 " %" PRIu64 " %.03f %.03f %.03f %" PRIu64 "\n",
