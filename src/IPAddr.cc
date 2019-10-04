@@ -14,14 +14,13 @@ const uint8_t IPAddr::v4_mapped_prefix[12] = { 0, 0, 0, 0,
                                                0, 0, 0, 0,
                                                0, 0, 0xff, 0xff };
 
-HashKey* BuildConnIDHashKey(const ConnID& id)
+const IPAddr IPAddr::v4_unspecified = IPAddr(in4_addr{});
+
+const IPAddr IPAddr::v6_unspecified = IPAddr();
+
+ConnIDKey BuildConnIDKey(const ConnID& id)
 	{
-	struct {
-		in6_addr ip1;
-		in6_addr ip2;
-		uint16_t port1;
-		uint16_t port2;
-	} key;
+	ConnIDKey key;
 
 	// Lookup up connection based on canonical ordering, which is
 	// the smaller of <src addr, src port> and <dst addr, dst port>
@@ -43,7 +42,7 @@ HashKey* BuildConnIDHashKey(const ConnID& id)
 		key.port2 = id.src_port;
 		}
 
-	return new HashKey(&key, sizeof(key));
+	return key;
 	}
 
 static inline uint32_t bit_mask32(int bottom_bits)

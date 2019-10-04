@@ -1,7 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#ifndef BRO_UID_H
-#define BRO_UID_H
+#pragma once
 
 #include <string>
 
@@ -37,7 +36,7 @@ public:
 	UID(const UID& other);
 
 	/**
-	 * Inititialize a UID of a given bit-length, optionally from given values.
+	 * Initialize a UID of a given bit-length, optionally from given values.
 	 * @param bits The desired length in bits of the UID, up to a max of
 	 *             BRO_UID_LEN * 64.
 	 * @param v A pointer to an array of values with which to initialize the
@@ -111,5 +110,3 @@ inline std::string UID::Base62(std::string prefix) const
 	}
 
 } // namespace Bro
-
-#endif

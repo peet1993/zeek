@@ -1,4 +1,227 @@
 
+3.1.0-dev.164 | 2019-10-02 11:04:13 -0700
+
+  * Fix build with external CAF but bundled Broker (Dominik Charousset)
+
+3.1.0-dev.161 | 2019-10-01 16:41:35 -0700
+
+  * Update COPYING.3rdparty (Tim Wojtulewicz, Corelight)
+
+  * Use json::emplace to avoid some extra calls to operator[] (Tim Wojtulewicz, Corelight)
+
+  * Use tessil/unordered-map instead of nlohmann/fifo-map to improve JSON
+    logging performance (Tim Wojtulewicz, Corelight)
+
+3.1.0-dev.156 | 2019-10-01 09:05:49 +0000
+
+  * Improve RecordVal JSON formatting to no longer create a record
+    introspection table each time when all the required information
+    can be obtained directly in the RecordVal and RecordType objects.
+    (Jon Siwek, Corelight)
+
+3.1.0-dev.153 | 2019-09-30 21:09:55 -0700
+
+  * GH-602: fix paraglob header inclusion, installation, and search paths (Jon Siwek, Corelight)
+
+3.1.0-dev.151 | 2019-09-30 17:39:50 -0700
+
+  * GH-606: Output nulls into json data if a field isn't set (Tim Wojtulewicz, Corelight)
+
+  * GH-598: handle multi-key sets correctly when outputting json (Tim Wojtulewicz, Corelight)
+
+  * Fix Xcode deprecation warning for std::ptr_fun (Jon Siwek, Corelight)
+
+3.1.0-dev.143 | 2019-09-24 10:23:24 -0700
+
+  * Simplify reassembly code using DataBlockList::LastBlock() (Jon Siwek, Corelight)
+
+  * Fix DataBlockList::DataSize() (Jon Siwek, Corelight)
+
+    Parameters got filled opposite to what they were supposed to be and
+    also didn't consider cutoffs that land in the middle of a block.
+
+3.1.0-dev.141 | 2019-09-24 10:31:50 +0000
+
+  * Reorganize reassembly data structures. This replaces the previous
+    linked list-based implementation with std::map to avoid O(n) worst
+    case performance. (Jon Siwek, Corelight)
+
+3.1.0-dev.131 | 2019-09-23 13:07:09 -0700
+
+  * Add --build-dir as alias for --builddir (Dominik Charousset, Corelight)
+
+  * Fix overly specific include_directories usage in CMake script (Dominik Charousset, Corelight)
+
+3.1.0-dev.127 | 2019-09-20 10:40:54 -0700
+
+  * Fix uncaught InterpreterException in Frame cloning (Robin Sommer, Corelight)
+
+    Fix for CIDs 1402823 and 1394050.
+
+3.1.0-dev.125 | 2019-09-19 16:40:10 -0700
+
+  * Update header include guard in zeek-config.h/bro-config.h (Jon Siwek, Corelight)
+
+3.1.0-dev.124 | 2019-09-17 11:16:47 -0700
+
+  * Add speculative service script. (Jan Grashoefer)
+
+    The speculative service script handles dpd_late_match events to extend
+    conn.log with infos about potential protocol identifications.
+
+  * Allow to handle late DPD matches. (Jan Grashoefer)
+
+    If "dpd_match_only_beginning" is disabled, matches of protocol signatures
+    can be handeld using protocol_late_match. To prevent further matching in
+    this case, the new option "dpd_late_match_stop" may be activated.
+
+3.1.0-dev.118 | 2019-09-17 17:21:58 +0000
+
+  * GH-566: Fix cases where ssh_encrypted_packet event wasn't raised.
+    When encrypted data was bundled within the same segment as the
+    NewKeys message, it wasn't not reported via a
+    ssh_encrypted_package event as it should have been. (Jon Siwek,
+    Corelight)
+
+3.1.0-dev.116 | 2019-09-17 10:08:38 -0700
+
+  * Switch from header guards to pragma once (Dominik Charousset, Corelight)
+
+3.1.0-dev.114 | 2019-09-17 09:32:34 -0700
+
+  * GH-580: Add additional 3rd party headers to includes (Derek Ditch)
+
+    Adds FIFO Map and JSON headers to include distribution
+
+3.1.0-dev.112 | 2019-09-16 17:11:41 -0700
+
+  * Add move assignment operator to logging::Tag (Tim Wojtulewicz, Corelight)
+
+    Coverity 1357732
+
+  * Throw an error during input::Manager::CreateTableStream if val is null (Tim Wojtulewicz, Corelight)
+
+    Coverity 1402730
+
+  * Use ntohl instead of manually swapping bytes in extract_XDR_uint32 (Tim Wojtulewicz, Corelight)
+
+    Coverity 1375796 and others
+
+  * Add check for null init variable during make_var. (Tim Wojtulewicz, Corelight)
+
+    Coverity 1403419
+
+  * Remove dead check in Val::check_and_promote. (Tim Wojtulewicz, Corelight)
+
+    Coverity 1401810
+
+  * Handle failure of fcntl in Pipe. (Tim Wojtulewicz, Corelight)
+
+    Coverity 1241934, 1241935
+
+  * Initialize missing field in File. (Tim Wojtulewicz, Corelight)
+
+    Coverity 1057851, 1057852, 1057853
+
+  * Add null check for results of dynamic_cast in AssignExpr::TypeCheck. (Tim Wojtulewicz, Corelight)
+
+    Coverity 1403416 and 1403417
+
+  * Add null check when getting key size for List types. (Tim Wojtulewicz, Corelight)
+
+    Coverity 1058242
+
+3.1.0-dev.102 | 2019-09-16 10:50:47 -0700
+
+  * Stop loading scan detection in local.zeek by default (Jon Siwek, Corelight)
+
+3.1.0-dev.98 | 2019-09-04 16:28:01 -0700
+
+  * Update Broker include dir search path (Jon Siwek, Corelight)
+
+3.1.0-dev.96 | 2019-09-04 13:41:42 -0700
+
+  * Update embedded CAF to 0.17.1 (plus cherry-picked memory leak fix) (Jon Siwek, Corelight)
+
+3.1.0-dev.93 | 2019-09-03 10:35:16 -0700
+
+  * Fix minor typos in code comments (The Alchemist)
+
+3.1.0-dev.89 | 2019-08-29 13:05:09 -0700
+
+  * CID 1404734: fix NetSessions::MemoryAllocation() (Jon Siwek, Corelight)
+
+3.1.0-dev.88 | 2019-08-28 12:48:04 -0700
+
+  * GH-545: add "addl" parameter to flow_weird and net_weird events (Jon Siwek, Corelight)
+
+  * GH-554: don't init PIA endpoint matchers if there's only file-magic
+
+    The logic for initializing PIA endpoint matchers was previously
+    skipped if "there's no global rule matcher", and that's only true
+    when no signature files get loaded.
+
+    But when using `zeek -b`, some file-magic signatures still get loaded
+    by default, so the PIA endpoint matchers still get initialized even
+    though they don't need to be -- file-magic patterns play no part
+    in PIA.
+
+    For typical use-cases (not using the `-b` flag), this change won't
+    help any, but we do at least use `-b` often within the test suite. (Jon Siwek, Corelight)
+
+  * GH-554: remove use of file magic in protocol-based signature logic
+
+    This can be a significant performance/memory improvement since
+    otherwise the protocol-based rule matching logic ends up superfluously
+    creating file-matching state per file-matcher per connection/endpoint. (Jon Siwek, Corelight)
+
+  * GH-541: add test cases for NTLM AV Pair sequence handling (Jon Siwek, Corelight)
+
+  * GH-541: fix handling of NTLM AV Pair sequences
+
+    Empty AV Pair sequences or AV Pair sequences that lack a terminator
+    could cause accesses past the end of the parsed vector. (Jon Siwek, Corelight)
+
+  * Make Tag::Error values constant (Jon Siwek, Corelight)
+
+  * Simplify operator bool()'s used for Tag error checks (Jon Siwek, Corelight)
+
+  * Add/use unspecified IPAddr constants
+
+    The analyzer-scheduling code was otherwise frequently converting the
+    unspecified v4/v6 addresses from strings. (Jon Siwek, Corelight)
+
+3.1.0-dev.75 | 2019-08-27 10:04:43 -0700
+
+  * Fix parsing of smb3 negotiate context (Pavel Ershov)
+
+3.1.0-dev.73 | 2019-08-26 14:57:45 -0700
+
+  * Close down SSL/sqlite at shutdown even if net_run not used (Tim Wojtulewicz, Corelight)
+
+  * Finish processing program arguments before setting up SSL/sqlite (Tim Wojtulewicz, Corelight)
+
+3.1.0-dev.70 | 2019-08-23 14:31:17 -0700
+
+  * Make github identify our Flex source correctly. (Seth Hall, Corelight)
+
+3.1.0-dev.68 | 2019-08-23 06:34:50 -0400
+
+  * Fix unit tests for new ordering from NetSessions::Drain (Tim Wojtulewicz, Corelight)
+
+  * Change FragReassembler to use a tuple as a key and use std::map for fragments in Sessions (Tim Wojtulewicz, Corelight)
+
+  * Rework Session/Connection tracking to use a std::map instead of PDict (Tim Wojtulewicz, Corelight)
+
+  * Improve GitHub language identification/stats (Seth Hall, Corelight)
+
+  * Zeekify thread naming. (Seth Hall, Corelight)
+
+    I copied the same style that caf uses ("zk" with single dot and no space).
+    This gives some consistency with caf and avoids us wasting more
+    space beyond "bro: ".  OSs only give 16 characters for thread names
+    so anything we can gain here is nice.
+
 3.1.0-dev.58 | 2019-08-16 18:45:39 +0000
 
   * GH-532: Improve disable_analyzer BIF. (Jon Siwek, Corelight)

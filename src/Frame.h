@@ -1,7 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#ifndef frame_h
-#define frame_h
+#pragma once
 
 #include <unordered_map>
 #include <memory>
@@ -129,7 +128,7 @@ public:
 	/**
 	 * Performs a deep copy of all the values in the current frame. If
 	 * the frame has a closure the returned frame captures that closure
-	 * by reference.. As such, performing a clone operation does not copy
+	 * by reference. As such, performing a clone operation does not copy
 	 * the values in the closure.
 	 *
 	 * @return a copy of this frame.
@@ -282,5 +281,3 @@ private:
  * https://stackoverflow.com/a/16211097
  */
 extern std::vector<Frame*> g_frame_stack;
-
-#endif

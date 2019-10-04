@@ -1,7 +1,9 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#ifndef sessions_h
-#define sessions_h
+#pragma once
+
+#include <map>
+#include <utility>
 
 #include "Dict.h"
 #include "CompHash.h"
@@ -12,8 +14,6 @@
 #include "NetVar.h"
 #include "TunnelEncapsulation.h"
 #include "analyzer/protocol/tcp/Stats.h"
-
-#include <utility>
 
 class EncapsulationStack;
 class Connection;
@@ -27,20 +27,20 @@ namespace analyzer { namespace stepping_stone { class SteppingStoneManager; } }
 namespace analyzer { namespace arp { class ARP_Analyzer; } }
 
 struct SessionStats {
-	int num_TCP_conns;
-	int max_TCP_conns;
+	size_t num_TCP_conns;
+	size_t max_TCP_conns;
 	uint64_t cumulative_TCP_conns;
 
-	int num_UDP_conns;
-	int max_UDP_conns;
+	size_t num_UDP_conns;
+	size_t max_UDP_conns;
 	uint64_t cumulative_UDP_conns;
 
-	int num_ICMP_conns;
-	int max_ICMP_conns;
+	size_t num_ICMP_conns;
+	size_t max_ICMP_conns;
 	uint64_t cumulative_ICMP_conns;
 
-	int num_fragments;
-	int max_fragments;
+	size_t num_fragments;
+	size_t max_fragments;
 	uint64_t num_packets;
 };
 
@@ -90,9 +90,9 @@ public:
 	void GetStats(SessionStats& s) const;
 
 	void Weird(const char* name, const Packet* pkt,
-	    const EncapsulationStack* encap = 0);
+	    const EncapsulationStack* encap = 0, const char* addl = "");
 	void Weird(const char* name, const IP_Hdr* ip,
-	    const EncapsulationStack* encap = 0);
+	    const EncapsulationStack* encap = 0, const char* addl = "");
 
 	PacketFilter* GetPacketFilter()
 		{
@@ -112,8 +112,7 @@ public:
 
 	unsigned int CurrentConnections()
 		{
-		return tcp_conns.Length() + udp_conns.Length() +
-			icmp_conns.Length();
+		return tcp_conns.size() + udp_conns.size() + icmp_conns.size();
 		}
 
 	void DoNextPacket(double t, const Packet *pkt, const IP_Hdr* ip_hdr,
@@ -172,9 +171,14 @@ protected:
 	friend class TimerMgrExpireTimer;
 	friend class IPTunnelTimer;
 
-	Connection* NewConn(HashKey* k, double t, const ConnID* id,
+	using ConnectionMap = std::map<ConnIDKey, Connection*>;
+	using FragmentMap = std::map<FragReassemblerKey, FragReassembler*>;
+
+	Connection* NewConn(const ConnIDKey& k, double t, const ConnID* id,
 			const u_char* data, int proto, uint32_t flow_label,
 			const Packet* pkt, const EncapsulationStack* encapsulation);
+
+	Connection* LookupConn(const ConnectionMap& conns, const ConnIDKey& key);
 
 	// Check whether the tag of the current packet is consistent with
 	// the given connection.  Returns:
@@ -212,11 +216,19 @@ protected:
 	bool CheckHeaderTrunc(int proto, uint32_t len, uint32_t caplen,
 			      const Packet *pkt, const EncapsulationStack* encap);
 
-	CompositeHash* ch;
-	PDict<Connection> tcp_conns;
-	PDict<Connection> udp_conns;
-	PDict<Connection> icmp_conns;
-	PDict<FragReassembler> fragments;
+	// Inserts a new connection into the sessions map. If a connection with
+	// the same key already exists in the map, it will be overwritten by
+	// the new one.  Connection count stats get updated either way (so most
+	// cases should likely check that the key is not already in the map to
+	// avoid unnecessary incrementing of connecting counts).
+	void InsertConnection(ConnectionMap* m, const ConnIDKey& key, Connection* conn);
+
+	ConnectionMap tcp_conns;
+	ConnectionMap udp_conns;
+	ConnectionMap icmp_conns;
+	FragmentMap fragments;
+
+	SessionStats stats;
 
 	typedef pair<IPAddr, IPAddr> IPPair;
 	typedef pair<EncapsulatingConn, double> TunnelActivity;
@@ -270,5 +282,3 @@ private:
 
 // Manager for the currently active sessions.
 extern NetSessions* sessions;
-
-#endif

@@ -440,8 +440,16 @@ install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/
         PATTERN "CMakeFiles" EXCLUDE
 )
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/sqlite3.h
+install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/sqlite3.h
         DESTINATION include/zeek/3rdparty
+)
+
+install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/tsl-ordered-map/ordered_map.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/tsl-ordered-map/ordered_hash.h
+        DESTINATION include/zeek/3rdparty/tsl-ordered-map
 )
 
 ########################################################################

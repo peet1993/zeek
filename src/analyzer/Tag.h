@@ -1,7 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#ifndef ANALYZER_TAG_H
-#define ANALYZER_TAG_H
+#pragma once
 
 #include "zeek-config.h"
 #include "util.h"
@@ -43,7 +42,7 @@ public:
 	 * Returns false if the tag represents an error value rather than a
 	 * legal analyzer type.
 	 */
-	explicit operator bool() const	{ return *this != Tag(); }
+	explicit operator bool() const	{ return *this != Error; }
 
 	/**
 	 * Assignment operator.
@@ -82,7 +81,7 @@ public:
 	 */
 	EnumVal* AsEnumVal() const;
 
-	static Tag Error;
+	static const Tag Error;
 
 protected:
 	friend class analyzer::Manager;
@@ -110,5 +109,3 @@ protected:
 };
 
 }
-
-#endif

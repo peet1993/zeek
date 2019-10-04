@@ -9,6 +9,16 @@ Zeek 3.1.0
 New Functionality
 -----------------
 
+- Add a new option, ``dpd_late_match_stop``, which can be used in conjuction
+  with the option ``dpd_match_only_beginning`` and the new event
+  ``protocol_late_match`` to help annotate the conn.log with a field
+  to speculate on the protocol/service in cases where the DPD buffer
+  was already exhausted and can't analyze the full connection anymore,
+  but where there was still a late signature match.  A new script,
+  ``policy/protocols/conn/speculative-service.zeek``, was added as an
+  example of how to perform this tuning and add a "speculative_service"
+  field to conn.log, but it's not loaded by default.
+
 Changed Functionality
 ---------------------
 
@@ -298,9 +308,14 @@ Changed Functionality
   that didn't otherwise handle them (like syslog, modbus, dnp3) are now
   a ProtocolViolation instead
 
+- An "addl" parameter was added to the ``flow_weird`` and ``net_weird`` events
+  for describing additional information about the weird.  The ``conn_weird``
+  event already had such a parameter.
+
 - Weird names that contained variable content and may result in an unbounded
   number of weird names have been renamed to remove the variable content
-  (which has been made available in the "addl" field of conn_weirds):
+  (which has been made available in the "addl" field of ``conn_weird``,
+   ``flow_weird``, or ``net_weird`` events):
 
     - "unknown_dce_rpc_auth_type_%d" -> unknown_dce_rpc_auth_type
     - "gtp_invalid_info_element_%d" -> gtp_invalid_info_element
@@ -479,6 +494,9 @@ Changed Functionality
 - There now is a maximum number of protocol violations that can be raised by an analyzer
   before it is disabled; the default is set to 5. This behavior is customizable using
   ``DPD::max_violations`` and ``DPD::ignore_violations``.
+
+- The scan detection script, ``policy/misc/scan``, is no longer loaded by
+  default in ``site/local.zeek`` due to it frequenty causing performance issues.
 
 Removed Functionality
 ---------------------

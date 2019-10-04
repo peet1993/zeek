@@ -1,7 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#ifndef LOGGING_TAG_H
-#define LOGGING_TAG_H
+#pragma once
 
 #include "zeek-config.h"
 #include "util.h"
@@ -43,12 +42,17 @@ public:
 	 * Returns false if the tag represents an error value rather than a
 	 * legal writer type.
 	 */
-	explicit operator bool() const	{ return *this != Tag(); }
+	explicit operator bool() const	{ return *this != Error; }
 
 	/**
 	 * Assignment operator.
 	 */
 	Tag& operator=(const Tag& other);
+
+	/**
+	 * Move assignment operator.
+	 */
+	Tag& operator=(const Tag&& other);
 
 	/**
 	 * Compares two tags for equality.
@@ -82,7 +86,7 @@ public:
 	 */
 	EnumVal* AsEnumVal() const;
 
-	static Tag Error;
+	static const Tag Error;
 
 protected:
 	friend class plugin::ComponentManager<Tag, Component>;
@@ -109,5 +113,3 @@ protected:
 };
 
 }
-
-#endif

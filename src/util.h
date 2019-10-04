@@ -1,7 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#ifndef util_h
-#define util_h
+#pragma once
 
 #ifdef __GNUC__
     #define ZEEK_DEPRECATED(msg) __attribute__ ((deprecated(msg)))
@@ -427,7 +426,7 @@ extern int time_compare(struct timeval* tv_a, struct timeval* tv_b);
 
 // Returns an integer that's very likely to be unique, even across Bro
 // instances. The integer can be drawn from different pools, which is helpful
-// when the randon number generator is seeded to be deterministic. In that
+// when the random number generator is seeded to be deterministic. In that
 // case, the same sequence of integers is generated per pool.
 #define UID_POOL_DEFAULT_INTERNAL 1
 #define UID_POOL_DEFAULT_SCRIPT   2
@@ -580,5 +579,3 @@ std::unique_ptr<T> build_unique (Args&&... args) {
  * @return the escaped string
  */
 std::string json_escape_utf8(const std::string& val);
-
-#endif

@@ -1,5 +1,6 @@
 #include "PIA.h"
 #include "RuleMatcher.h"
+#include "Event.h"
 #include "analyzer/protocol/tcp/TCP_Flags.h"
 #include "analyzer/protocol/tcp/TCP_Reassembler.h"
 
@@ -130,6 +131,9 @@ void PIA::DoMatch(const u_char* data, int len, bool is_orig, bool bol, bool eol,
 	if ( ! rule_matcher )
 		return;
 
+	if ( ! rule_matcher->HasNonFileMagicRule() )
+		return;
+
 	if ( ! MatcherInitialized(is_orig) )
 		InitEndpointMatcher(AsAnalyzer(), ip, len, is_orig, this);
 
@@ -144,6 +148,20 @@ void PIA_UDP::ActivateAnalyzer(analyzer::Tag tag, const Rule* rule)
 		DBG_LOG(DBG_ANALYZER, "analyzer found but buffer already exceeded");
 		// FIXME: This is where to check whether an analyzer
 		// supports partial connections once we get such.
+
+		if ( protocol_late_match )
+			{
+			// Queue late match event
+			EnumVal *tval = tag ? tag.AsEnumVal() : GetAnalyzerTag().AsEnumVal();
+			Ref(tval);
+
+			mgr.QueueEventFast(protocol_late_match, {
+			    BuildConnVal(),
+			    tval,
+			});
+			}
+
+		pkt_buffer.state = dpd_late_match_stop ? SKIPPING : MATCHING_ONLY;
 		return;
 		}
 
@@ -280,6 +298,20 @@ void PIA_TCP::ActivateAnalyzer(analyzer::Tag tag, const Rule* rule)
 		DBG_LOG(DBG_ANALYZER, "analyzer found but buffer already exceeded");
 		// FIXME: This is where to check whether an analyzer supports
 		// partial connections once we get such.
+
+		if ( protocol_late_match )
+			{
+			// Queue late match event
+			EnumVal *tval = tag ? tag.AsEnumVal() : GetAnalyzerTag().AsEnumVal();
+			Ref(tval);
+
+			mgr.QueueEventFast(protocol_late_match, {
+			    BuildConnVal(),
+			    tval
+			});
+			}
+
+		stream_buffer.state = dpd_late_match_stop ? SKIPPING : MATCHING_ONLY;
 		return;
 		}
 
