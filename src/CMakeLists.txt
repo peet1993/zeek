@@ -142,6 +142,7 @@ set(bro_SUBDIR_LIBS CACHE INTERNAL "subdir libraries" FORCE)
 set(bro_PLUGIN_LIBS CACHE INTERNAL "plugin libraries" FORCE)
 
 add_subdirectory(analyzer)
+add_subdirectory(llanalyzer)
 add_subdirectory(broker)
 add_subdirectory(zeekygen)
 add_subdirectory(file_analysis)
