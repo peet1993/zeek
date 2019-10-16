@@ -1,4 +1,55 @@
 
+3.1.0-dev.185 | 2019-10-15 16:46:22 -0700
+
+  * Add weirds for invalid TCP option lengths (Jon Siwek, Corelight)
+
+  * GH-618: add "tcp_options" event containing TCP option values (Jon Siwek, Corelight)
+
+  * Fix tcp_option event
+
+    It was not being raised in all the cases it should have been due to
+    an incorrect/unnecessary truncation check. (Jon Siwek, Corelight)
+
+3.1.0-dev.181 | 2019-10-14 22:05:01 -0700
+
+  * Fix redef'ing a table with a new &default attribute (Jon Siwek, Corelight)
+
+3.1.0-dev.179 | 2019-10-14 21:33:15 -0700
+
+  * Support whitespace at end of line for config reader (Seth Hall, Corelight)
+
+3.1.0-dev.177 | 2019-10-14 20:13:24 -0700
+
+  * Proof of Concept on Bugprone Narrowing Conversions: Base64 (Dev Bali, Corelight)
+
+3.1.0-dev.175 | 2019-10-12 10:39:49 -0700
+
+  * Use Ubuntu 14.04 for Travis CI environment (Jon Siwek, Corelight)
+
+3.1.0-dev.172 | 2019-10-08 15:14:35 -0700
+
+  * Add new BIF: print_raw()
+
+    This is a convenience function to make it easier to print literal byte
+    sequences to stdout without additional escaping like what may be added
+    by the default `print` statement behavior.
+
+    For example, related to GH-596, `print` currently escapes even valid
+    UTF-8 byte sequences and makes it difficult to output valid JSON strings
+    containing such. (Jon Siwek, Corelight)
+
+  * Fix compilation on OS-X. (Johanna Amann)
+
+3.1.0-dev.169 | 2019-10-07 10:50:35 -0700
+
+  * GH-589: improve printing of sub-microsecond intervals (Jon Siwek, Corelight)
+
+3.1.0-dev.167 | 2019-10-07 10:42:15 -0700
+
+  * GH-591: allow Config::set_value() to use empty/unspecified table/sets (Jon Siwek, Corelight)
+
+  * GH-591: fix reading set[enum] values from input files (Jon Siwek, Corelight)
+
 3.1.0-dev.164 | 2019-10-02 11:04:13 -0700
 
   * Fix build with external CAF but bundled Broker (Dominik Charousset)
