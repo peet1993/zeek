@@ -510,6 +510,7 @@ inline char* safe_strncpy(char* dest, const char* src, size_t n)
 	return result;
 	}
 
+ZEEK_DEPRECATED("Remove in v4.1: Use system snprintf instead")
 inline int safe_snprintf(char* str, size_t size, const char* format, ...)
 	{
 	va_list al;
@@ -521,6 +522,7 @@ inline int safe_snprintf(char* str, size_t size, const char* format, ...)
 	return result;
 	}
 
+ZEEK_DEPRECATED("Remove in v4.1: Use system vsnprintf instead")
 inline int safe_vsnprintf(char* str, size_t size, const char* format, va_list al)
 	{
 	int result = vsnprintf(str, size, format, al);
@@ -562,15 +564,6 @@ void bro_strerror_r(int bro_errno, char* buf, size_t buflen);
  * legacy environment variable names that map to the latest \a name.
  */
 char* zeekenv(const char* name);
-
-/**
- * Small convenience function. Does what std::make_unique does in C++14. Will not
- * work on arrays.
- */
-template <typename T, typename ... Args>
-std::unique_ptr<T> build_unique (Args&&... args) {
-	return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
-}
 
 /**
  * Escapes bytes in a string that are not valid UTF8 characters with \xYY format. Used
