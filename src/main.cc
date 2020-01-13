@@ -50,6 +50,7 @@ extern "C" {
 #include "input/readers/raw/Raw.h"
 #include "analyzer/Manager.h"
 #include "analyzer/Tag.h"
+#include "llanalyzer/Manager.h"
 #include "plugin/Manager.h"
 #include "file_analysis/Manager.h"
 #include "zeekygen/Manager.h"
@@ -90,6 +91,7 @@ threading::Manager* thread_mgr = 0;
 input::Manager* input_mgr = 0;
 plugin::Manager* plugin_mgr = 0;
 analyzer::Manager* analyzer_mgr = 0;
+llanalyzer::Manager* llanalyzer_mgr = 0;
 file_analysis::Manager* file_mgr = 0;
 zeekygen::Manager* zeekygen_mgr = 0;
 iosource::Manager* iosource_mgr = 0;
@@ -287,6 +289,7 @@ void done_with_network()
 	terminating = true;
 
 	analyzer_mgr->Done();
+	llanalyzer_mgr->Done();
 	timer_mgr->Expire();
 	dns_mgr->Flush();
 	mgr.Drain();
@@ -357,6 +360,7 @@ void terminate_bro()
 	delete timer_mgr;
 	delete event_registry;
 	delete analyzer_mgr;
+	delete llanalyzer_mgr;
 	delete file_mgr;
 	// broker_mgr is deleted via iosource_mgr
 	delete iosource_mgr;
@@ -817,6 +821,7 @@ int main(int argc, char** argv)
 	iosource_mgr = new iosource::Manager();
 	event_registry = new EventRegistry();
 	analyzer_mgr = new analyzer::Manager();
+	llanalyzer_mgr = new llanalyzer::Manager();
 	log_mgr = new logging::Manager();
 	input_mgr = new input::Manager();
 	file_mgr = new file_analysis::Manager();
@@ -824,6 +829,7 @@ int main(int argc, char** argv)
 
 	plugin_mgr->InitPreScript();
 	analyzer_mgr->InitPreScript();
+	llanalyzer_mgr->InitPreScript();
 	file_mgr->InitPreScript();
 	zeekygen_mgr->InitPreScript();
 
@@ -902,6 +908,7 @@ int main(int argc, char** argv)
 		}
 
 	analyzer_mgr->InitPostScript();
+	llanalyzer_mgr->InitPostScript();
 	file_mgr->InitPostScript();
 	dns_mgr->InitPostScript();
 
@@ -1110,6 +1117,7 @@ int main(int argc, char** argv)
 	broker_mgr->ZeekInitDone();
 	reporter->ZeekInitDone();
 	analyzer_mgr->DumpDebug();
+	llanalyzer_mgr->DumpDebug();
 
 	have_pending_timers = ! reading_traces && timer_mgr->Size() > 0;
 
