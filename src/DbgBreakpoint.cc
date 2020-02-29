@@ -2,17 +2,23 @@
 
 #include "zeek-config.h"
 
+#include "DbgBreakpoint.h"
+
 #include <assert.h>
 
+#include "Desc.h"
 #include "ID.h"
 #include "Queue.h"
 #include "Debug.h"
 #include "Scope.h"
+#include "Frame.h"
 #include "Func.h"
+#include "IntrusivePtr.h"
+#include "Val.h"
 #include "Stmt.h"
-#include "DbgBreakpoint.h"
 #include "Timer.h"
-
+#include "Reporter.h"
+#include "module_util.h"
 
 // BreakpointTimer used for time-based breakpoints
 class BreakpointTimer : public Timer {
@@ -114,7 +120,7 @@ void DbgBreakpoint::RemoveFromStmt()
 	}
 
 
-bool DbgBreakpoint::SetLocation(ParseLocationRec plr, string loc_str)
+bool DbgBreakpoint::SetLocation(ParseLocationRec plr, string_view loc_str)
 	{
 	if ( plr.type == plrUnknown )
 		{
@@ -143,9 +149,10 @@ bool DbgBreakpoint::SetLocation(ParseLocationRec plr, string loc_str)
 
 	else if ( plr.type == plrFunction )
 		{
+		std::string loc_s(loc_str);
 		kind = BP_FUNC;
 		function_name = make_full_var_name(current_module.c_str(),
-							loc_str.c_str());
+							loc_s.c_str());
 		at_stmt = plr.stmt;
 		const Location* loc = at_stmt->GetLocationInfo();
 		snprintf(description, sizeof(description), "%s at %s:%d",
@@ -240,7 +247,7 @@ BreakCode DbgBreakpoint::HasHit()
 	if ( condition.size() )
 		{
 		// TODO: ### evaluate using debugger frame too
-		Val* yes = dbg_eval_expr(condition.c_str());
+		auto yes = dbg_eval_expr(condition.c_str());
 
 		if ( ! yes )
 			{
@@ -261,7 +268,9 @@ BreakCode DbgBreakpoint::HasHit()
 
 		yes->CoerceToInt();
 		if ( yes->IsZero() )
+			{
 			return bcNoHit;
+			}
 		}
 
 	int repcount = GetRepeatCount();

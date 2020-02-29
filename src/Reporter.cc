@@ -2,18 +2,24 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 //
 
+#include "zeek-config.h"
+#include "Reporter.h"
+
 #include <unistd.h>
 #include <syslog.h>
 
-#include "zeek-config.h"
-#include "Reporter.h"
+#include "Desc.h"
 #include "Event.h"
+#include "Expr.h"
 #include "NetVar.h"
 #include "Net.h"
 #include "Conn.h"
 #include "Timer.h"
+#include "Var.h" // for internal_val()
+#include "EventHandler.h"
 #include "plugin/Plugin.h"
 #include "plugin/Manager.h"
+#include "input.h"
 #include "file_analysis/File.h"
 
 #ifdef SYSLOG_INT
@@ -250,7 +256,7 @@ public:
 	using IPPair = std::pair<IPAddr, IPAddr>;
 
 	FlowWeirdTimer(double t, IPPair p, double timeout)
-	: Timer(t + timeout, TIMER_FLOW_WEIRD_EXPIRE), endpoints(p)
+		: Timer(t + timeout, TIMER_FLOW_WEIRD_EXPIRE), endpoints(std::move(p))
 		{}
 
 	void Dispatch(double t, int is_expire) override

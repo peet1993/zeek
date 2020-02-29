@@ -1,12 +1,15 @@
-#include <algorithm>
-
+#include "TCP_Reassembler.h"
+#include "TCP_Endpoint.h"
 #include "File.h"
 #include "analyzer/Analyzer.h"
-#include "TCP_Reassembler.h"
 #include "analyzer/protocol/tcp/TCP.h"
-#include "TCP_Endpoint.h"
+#include "BroString.h"
+#include "Reporter.h"
+#include "RuleMatcher.h"
 
 #include "events.bif.h"
+
+#include <algorithm>
 
 using namespace analyzer::tcp;
 
@@ -28,9 +31,9 @@ TCP_Reassembler::TCP_Reassembler(analyzer::Analyzer* arg_dst_analyzer,
 	endp = arg_endp;
 	had_gap = false;
 	record_contents_file = 0;
-	deliver_tcp_contents = 0;
-	skip_deliveries = 0;
-	did_EOF = 0;
+	deliver_tcp_contents = false;
+	skip_deliveries = false;
+	did_EOF = false;
 	seq_to_skip = 0;
 	in_delivery = false;
 
@@ -49,7 +52,7 @@ TCP_Reassembler::TCP_Reassembler(analyzer::Analyzer* arg_dst_analyzer,
 		if ( (IsOrig() && tcp_content_deliver_all_orig) ||
 		     (! IsOrig() && tcp_content_deliver_all_resp) ||
 		     (result && result->AsBool()) )
-			deliver_tcp_contents = 1;
+			deliver_tcp_contents = true;
 
 		Unref(dst_port_val);
 		}
@@ -221,7 +224,7 @@ void TCP_Reassembler::Undelivered(uint64_t up_to_seq)
 		// the SYN packet carries data.
 		//
 		// Skip the undelivered part without reporting to the endpoint.
-		skip_deliveries = 1;
+		skip_deliveries = true;
 		}
 	else
 		{
@@ -517,7 +520,7 @@ int TCP_Reassembler::DataSent(double t, uint64_t seq, int len,
 		{
 		tcp_analyzer->Weird("above_hole_data_without_any_acks");
 		ClearBlocks();
-		skip_deliveries = 1;
+		skip_deliveries = true;
 		}
 
 	if ( tcp_excessive_data_without_further_acks &&
@@ -525,7 +528,7 @@ int TCP_Reassembler::DataSent(double t, uint64_t seq, int len,
 		{
 		tcp_analyzer->Weird("excessive_data_without_further_acks");
 		ClearBlocks();
-		skip_deliveries = 1;
+		skip_deliveries = true;
 		}
 
 	return 1;
@@ -592,7 +595,7 @@ void TCP_Reassembler::CheckEOF()
 			          network_time, endp->IsOrig());
 			}
 
-		did_EOF = 1;
+		did_EOF = true;
 		tcp_analyzer->EndpointEOF(this);
 		}
 	}

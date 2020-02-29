@@ -1,10 +1,13 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
+#include "CardinalityCounter.h"
+
 #include <math.h>
 #include <stdint.h>
-#include <iostream>
+#include <utility>
 
-#include "CardinalityCounter.h"
+#include <broker/data.hh>
+
 #include "Reporter.h"
 
 using namespace probabilistic;
@@ -73,7 +76,7 @@ CardinalityCounter::CardinalityCounter(CardinalityCounter& other)
 	p = other.p;
 	}
 
-CardinalityCounter::CardinalityCounter(CardinalityCounter&& o)
+CardinalityCounter::CardinalityCounter(CardinalityCounter&& o) noexcept
 	{
 	V = o.V;
 	alpha_m = o.alpha_m;
@@ -170,7 +173,7 @@ bool CardinalityCounter::Merge(CardinalityCounter* c)
 	if ( m != c->GetM() )
 		return false;
 
-	const vector<uint8_t> temp = c->GetBuckets();
+	const vector<uint8_t>& temp = c->GetBuckets();
 
 	V = 0;
 

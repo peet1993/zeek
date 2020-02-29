@@ -1,3 +1,7 @@
+%extern{
+#include "Sessions.h"
+#include "BroString.h"
+%}
 
 %code{
 RecordVal* BuildGTPv1Hdr(const GTPv1_Header* pdu)

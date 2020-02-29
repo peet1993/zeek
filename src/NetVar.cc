@@ -2,8 +2,10 @@
 
 #include "zeek-config.h"
 
-#include "Var.h"
 #include "NetVar.h"
+#include "Var.h"
+#include "EventHandler.h"
+#include "Val.h"
 
 RecordType* conn_id;
 RecordType* endpoint;
@@ -196,6 +198,7 @@ bro_uint_t bits_per_uid;
 #include "types.bif.netvar_def"
 #include "event.bif.netvar_def"
 #include "reporter.bif.netvar_def"
+#include "supervisor.bif.netvar_def"
 
 void init_event_handlers()
 	{
@@ -240,6 +243,7 @@ void init_net_var()
 #include "const.bif.netvar_init"
 #include "types.bif.netvar_init"
 #include "reporter.bif.netvar_init"
+#include "supervisor.bif.netvar_init"
 
 	conn_id = internal_type("conn_id")->AsRecordType();
 	endpoint = internal_type("endpoint")->AsRecordType();

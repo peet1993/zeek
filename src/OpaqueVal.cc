@@ -3,11 +3,16 @@
 #include <memory>
 
 #include "OpaqueVal.h"
+#include "CompHash.h"
 #include "NetVar.h"
 #include "Reporter.h"
+#include "Scope.h"
+#include "Desc.h"
+#include "Var.h"
 #include "probabilistic/BloomFilter.h"
 #include "probabilistic/CardinalityCounter.h"
 
+#include <broker/data.hh>
 #include <broker/error.hh>
 
 // Helper to retrieve a broker value out of a broker::vector at a specified
@@ -51,7 +56,7 @@ const std::string& OpaqueMgr::TypeID(const OpaqueVal* v) const
 	return x->first;
 	}
 
-OpaqueVal* OpaqueMgr::Instantiate(const std::string& id) const
+IntrusivePtr<OpaqueVal> OpaqueMgr::Instantiate(const std::string& id) const
 	{
 	auto x = _types.find(id);
 	return x != _types.end() ? (*x->second)() : nullptr;
@@ -68,7 +73,7 @@ broker::expected<broker::data> OpaqueVal::Serialize() const
 	return {broker::vector{std::move(type), std::move(*d)}};
 	}
 
-OpaqueVal* OpaqueVal::Unserialize(const broker::data& data)
+IntrusivePtr<OpaqueVal> OpaqueVal::Unserialize(const broker::data& data)
 	{
 	auto v = caf::get_if<broker::vector>(&data);
 
@@ -85,7 +90,6 @@ OpaqueVal* OpaqueVal::Unserialize(const broker::data& data)
 
 	if ( ! val->DoUnserialize((*v)[1]) )
 		{
-		Unref(val);
 		return nullptr;
 		}
 
@@ -149,7 +153,7 @@ Val* OpaqueVal::DoClone(CloneState* state)
 		return nullptr;
 
 	auto rval = OpaqueVal::Unserialize(std::move(*d));
-	return state->NewClone(this, rval);
+	return state->NewClone(this, rval.release());
 	}
 
 bool HashVal::IsValid() const
@@ -166,12 +170,13 @@ bool HashVal::Init()
 	return valid;
 	}
 
-StringVal* HashVal::Get()
+IntrusivePtr<StringVal> HashVal::Get()
 	{
 	if ( ! valid )
-		return val_mgr->GetEmptyString();
+		return IntrusivePtr<StringVal>(AdoptRef{},
+					       val_mgr->GetEmptyString());
 
-	StringVal* result = DoGet();
+	auto result = DoGet();
 	valid = false;
 	return result;
 	}
@@ -197,10 +202,10 @@ bool HashVal::DoFeed(const void*, size_t)
 	return false;
 	}
 
-StringVal* HashVal::DoGet()
+IntrusivePtr<StringVal> HashVal::DoGet()
 	{
 	assert(! "missing implementation of DoGet()");
-	return val_mgr->GetEmptyString();
+	return IntrusivePtr<StringVal>(AdoptRef{}, val_mgr->GetEmptyString());
 	}
 
 HashVal::HashVal(OpaqueType* t) : OpaqueVal(t)
@@ -280,14 +285,14 @@ bool MD5Val::DoFeed(const void* data, size_t size)
 	return true;
 	}
 
-StringVal* MD5Val::DoGet()
+IntrusivePtr<StringVal> MD5Val::DoGet()
 	{
 	if ( ! IsValid() )
-		return val_mgr->GetEmptyString();
+		return IntrusivePtr<StringVal>(AdoptRef{}, val_mgr->GetEmptyString());
 
 	u_char digest[MD5_DIGEST_LENGTH];
 	hash_final(ctx, digest);
-	return new StringVal(md5_digest_print(digest));
+	return make_intrusive<StringVal>(md5_digest_print(digest));
 	}
 
 IMPLEMENT_OPAQUE_VALUE(MD5Val)
@@ -420,14 +425,15 @@ bool SHA1Val::DoFeed(const void* data, size_t size)
 	return true;
 	}
 
-StringVal* SHA1Val::DoGet()
+IntrusivePtr<StringVal> SHA1Val::DoGet()
 	{
 	if ( ! IsValid() )
-		return val_mgr->GetEmptyString();
+		return IntrusivePtr<StringVal>(AdoptRef{},
+		                               val_mgr->GetEmptyString());
 
 	u_char digest[SHA_DIGEST_LENGTH];
 	hash_final(ctx, digest);
-	return new StringVal(sha1_digest_print(digest));
+	return make_intrusive<StringVal>(sha1_digest_print(digest));
 	}
 
 IMPLEMENT_OPAQUE_VALUE(SHA1Val)
@@ -563,14 +569,15 @@ bool SHA256Val::DoFeed(const void* data, size_t size)
 	return true;
 	}
 
-StringVal* SHA256Val::DoGet()
+IntrusivePtr<StringVal> SHA256Val::DoGet()
 	{
 	if ( ! IsValid() )
-		return val_mgr->GetEmptyString();
+		return IntrusivePtr<StringVal>(AdoptRef{},
+		                               val_mgr->GetEmptyString());
 
 	u_char digest[SHA256_DIGEST_LENGTH];
 	hash_final(ctx, digest);
-	return new StringVal(sha256_digest_print(digest));
+	return make_intrusive<StringVal>(sha256_digest_print(digest));
 	}
 
 IMPLEMENT_OPAQUE_VALUE(SHA256Val)
@@ -786,10 +793,9 @@ bool BloomFilterVal::Typify(BroType* arg_type)
 	type = arg_type;
 	type->Ref();
 
-	TypeList* tl = new TypeList(type);
+	auto tl = make_intrusive<TypeList>(type);
 	tl->Append(type->Ref());
-	hash = new CompositeHash(tl);
-	Unref(tl);
+	hash = new CompositeHash(std::move(tl));
 
 	return true;
 	}
@@ -829,8 +835,8 @@ string BloomFilterVal::InternalState() const
 	return bloom_filter->InternalState();
 	}
 
-BloomFilterVal* BloomFilterVal::Merge(const BloomFilterVal* x,
-				      const BloomFilterVal* y)
+IntrusivePtr<BloomFilterVal> BloomFilterVal::Merge(const BloomFilterVal* x,
+                                                   const BloomFilterVal* y)
 	{
 	if ( x->Type() && // any one 0 is ok here
 	     y->Type() &&
@@ -850,11 +856,12 @@ BloomFilterVal* BloomFilterVal::Merge(const BloomFilterVal* x,
 
 	if ( ! copy->Merge(y->bloom_filter) )
 		{
+		delete copy;
 		reporter->Error("failed to merge Bloom filter");
 		return 0;
 		}
 
-	BloomFilterVal* merged = new BloomFilterVal(copy);
+	auto merged = make_intrusive<BloomFilterVal>(copy);
 
 	if ( x->Type() && ! merged->Typify(x->Type()) )
 		{
@@ -956,10 +963,9 @@ bool CardinalityVal::Typify(BroType* arg_type)
 	type = arg_type;
 	type->Ref();
 
-	TypeList* tl = new TypeList(type);
+	auto tl = make_intrusive<TypeList>(type);
 	tl->Append(type->Ref());
-	hash = new CompositeHash(tl);
-	Unref(tl);
+	hash = new CompositeHash(std::move(tl));
 
 	return true;
 	}
@@ -1030,9 +1036,9 @@ ParaglobVal::ParaglobVal(std::unique_ptr<paraglob::Paraglob> p)
 	this->internal_paraglob = std::move(p);
 	}
 
-VectorVal* ParaglobVal::Get(StringVal* &pattern)
+IntrusivePtr<VectorVal> ParaglobVal::Get(StringVal* &pattern)
 	{
-	VectorVal* rval = new VectorVal(internal_type("string_vec")->AsVectorType());
+	auto rval = make_intrusive<VectorVal>(internal_type("string_vec")->AsVectorType());
 	std::string string_pattern (reinterpret_cast<const char*>(pattern->Bytes()), pattern->Len());
 
 	std::vector<std::string> matches = this->internal_paraglob->get(string_pattern);

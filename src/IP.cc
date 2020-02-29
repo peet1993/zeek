@@ -1,13 +1,17 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
+#include "IP.h"
+
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/icmp6.h>
 
-#include "IP.h"
+#include "IPAddr.h"
 #include "Type.h"
 #include "Val.h"
 #include "Var.h"
+#include "BroString.h"
+#include "Reporter.h"
 
 static RecordType* ip4_hdr_type = 0;
 static RecordType* ip6_hdr_type = 0;
@@ -304,6 +308,26 @@ RecordVal* IPv6_Hdr::BuildRecordVal(VectorVal* chain) const
 	return rv;
 	}
 
+IPAddr IP_Hdr::IPHeaderSrcAddr() const
+	{
+	return ip4 ? IPAddr(ip4->ip_src) : IPAddr(ip6->ip6_src);
+	}
+
+IPAddr IP_Hdr::IPHeaderDstAddr() const
+	{
+	return ip4 ? IPAddr(ip4->ip_dst) : IPAddr(ip6->ip6_dst);
+	}
+
+IPAddr IP_Hdr::SrcAddr() const
+	{
+	return ip4 ? IPAddr(ip4->ip_src) : ip6_hdrs->SrcAddr();
+	}
+
+IPAddr IP_Hdr::DstAddr() const
+	{
+	return ip4 ? IPAddr(ip4->ip_dst) : ip6_hdrs->DstAddr();
+	}
+
 RecordVal* IP_Hdr::BuildIPHdrVal() const
 	{
 	RecordVal* rval = 0;
@@ -446,6 +470,15 @@ static inline bool isIPv6ExtHeader(uint8_t type)
 	}
 	}
 
+IPv6_Hdr_Chain::~IPv6_Hdr_Chain()
+	{
+	for ( size_t i = 0; i < chain.size(); ++i ) delete chain[i];
+#ifdef ENABLE_MOBILE_IPV6
+	delete homeAddr;
+#endif
+	delete finalDst;
+	}
+
 void IPv6_Hdr_Chain::Init(const struct ip6_hdr* ip6, int total_len,
                           bool set_next, uint16_t next)
 	{
@@ -508,6 +541,46 @@ void IPv6_Hdr_Chain::Init(const struct ip6_hdr* ip6, int total_len,
 				  current_type != IPPROTO_MOBILITY &&
 #endif
 				  isIPv6ExtHeader(next_type) );
+	}
+
+bool IPv6_Hdr_Chain::IsFragment() const
+	{
+	if ( chain.empty() )
+		{
+		reporter->InternalWarning("empty IPv6 header chain");
+		return false;
+		}
+
+	return chain[chain.size()-1]->Type() == IPPROTO_FRAGMENT;
+	}
+
+IPAddr IPv6_Hdr_Chain::SrcAddr() const
+	{
+#ifdef ENABLE_MOBILE_IPV6
+	if ( homeAddr )
+		return IPAddr(*homeAddr);
+#endif
+	if ( chain.empty() )
+		{
+		reporter->InternalWarning("empty IPv6 header chain");
+		return IPAddr();
+		}
+
+	return IPAddr(((const struct ip6_hdr*)(chain[0]->Data()))->ip6_src);
+	}
+
+IPAddr IPv6_Hdr_Chain::DstAddr() const
+	{
+	if ( finalDst )
+		return IPAddr(*finalDst);
+
+	if ( chain.empty() )
+		{
+		reporter->InternalWarning("empty IPv6 header chain");
+		return IPAddr();
+		}
+
+	return IPAddr(((const struct ip6_hdr*)(chain[0]->Data()))->ip6_dst);
 	}
 
 void IPv6_Hdr_Chain::ProcessRoutingHeader(const struct ip6_rthdr* r, uint16_t len)
@@ -693,7 +766,7 @@ IPv6_Hdr_Chain* IPv6_Hdr_Chain::Copy(const ip6_hdr* new_hdr) const
 		{
 		reporter->InternalWarning("empty IPv6 header chain");
 		delete rval;
-		return 0;
+		return nullptr;
 		}
 
 	const u_char* new_data = (const u_char*)new_hdr;

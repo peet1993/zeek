@@ -1,12 +1,17 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include <algorithm>
-
 #include "Manager.h"
+
+#include <string>
+#include <utility>
+
 #include "ReaderFrontend.h"
 #include "ReaderBackend.h"
+#include "Desc.h"
+#include "module_util.h"
 #include "input.bif.h"
 
+#include "Expr.h"
 #include "Event.h"
 #include "EventHandler.h"
 #include "NetVar.h"
@@ -730,7 +735,7 @@ bool Manager::CreateTableStream(RecordVal* fval)
 	return true;
 	}
 
-bool Manager::CheckErrorEventTypes(std::string stream_name, const Func* ev, bool table) const
+bool Manager::CheckErrorEventTypes(const std::string& stream_name, const Func* ev, bool table) const
 	{
 	if ( ev == nullptr )
 		return true;
@@ -968,6 +973,7 @@ bool Manager::UnrollRecordType(vector<Field*> *fields, const RecordType *rec,
 			{
 			string name = nameprepend + rec->FieldName(i);
 			const char* secondary = 0;
+			IntrusivePtr<Val> c;
 			TypeTag ty = rec->FieldType(i)->Tag();
 			TypeTag st = TYPE_VOID;
 			bool optional = false;
@@ -983,7 +989,7 @@ bool Manager::UnrollRecordType(vector<Field*> *fields, const RecordType *rec,
 				{
 				// we have an annotation for the second column
 
-				Val* c = rec->FieldDecl(i)->FindAttr(ATTR_TYPE_COLUMN)->AttrExpr()->Eval(0);
+				c = rec->FieldDecl(i)->FindAttr(ATTR_TYPE_COLUMN)->AttrExpr()->Eval(0);
 
 				assert(c);
 				assert(c->Type()->Tag() == TYPE_STRING);
@@ -2615,7 +2621,7 @@ Val* Manager::ValueToVal(const Stream* i, const Value* val, bool& have_error) co
 		string enum_string(val->val.string_val.data, val->val.string_val.length);
 
 		// let's try looking it up by global ID.
-		ID* id = lookup_ID(enum_string.c_str(), GLOBAL_MODULE_NAME);
+		auto id = lookup_ID(enum_string.c_str(), GLOBAL_MODULE_NAME);
 		if ( ! id || ! id->IsEnumConst() )
 			{
 			Warning(i, "Value '%s' for stream '%s' is not a valid enum.",

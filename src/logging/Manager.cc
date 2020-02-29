@@ -1,6 +1,8 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include <algorithm>
+#include "Manager.h"
+
+#include <utility>
 
 #include "Event.h"
 #include "EventHandler.h"
@@ -8,17 +10,20 @@
 #include "Net.h"
 #include "Type.h"
 #include "File.h"
+#include "input.h"
 
 #include "broker/Manager.h"
 #include "threading/Manager.h"
 #include "threading/SerialTypes.h"
 
-#include "Manager.h"
+#include "Desc.h"
 #include "WriterFrontend.h"
 #include "WriterBackend.h"
 #include "logging.bif.h"
 #include "plugin/Plugin.h"
 #include "plugin/Manager.h"
+
+#include <broker/endpoint_info.hh>
 
 using namespace logging;
 
@@ -381,7 +386,7 @@ bool Manager::DisableStream(EnumVal* id)
 
 // Helper for recursive record field unrolling.
 bool Manager::TraverseRecord(Stream* stream, Filter* filter, RecordType* rt,
-			    TableVal* include, TableVal* exclude, string path, list<int> indices)
+			    TableVal* include, TableVal* exclude, const string& path, const list<int>& indices)
 	{
 	// Only include extensions for the outer record.
 	int num_ext_fields = (indices.size() == 0) ? filter->num_ext_fields : 0;
@@ -671,7 +676,7 @@ bool Manager::RemoveFilter(EnumVal* id, StringVal* name)
 	return RemoveFilter(id, name->AsString()->CheckString());
 	}
 
-bool Manager::RemoveFilter(EnumVal* id, string name)
+bool Manager::RemoveFilter(EnumVal* id, const string& name)
 	{
 	Stream* stream = FindStream(id);
 	if ( ! stream )
@@ -1254,7 +1259,7 @@ void Manager::DeleteVals(int num_fields, threading::Value** vals)
 	delete [] vals;
 	}
 
-bool Manager::WriteFromRemote(EnumVal* id, EnumVal* writer, string path, int num_fields,
+bool Manager::WriteFromRemote(EnumVal* id, EnumVal* writer, const string& path, int num_fields,
 			      threading::Value** vals)
 	{
 	Stream* stream = FindStream(id);

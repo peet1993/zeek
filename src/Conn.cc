@@ -2,23 +2,27 @@
 
 #include "zeek-config.h"
 
+#include "Conn.h"
+
 #include <ctype.h>
 
+#include "Desc.h"
 #include "Net.h"
 #include "NetVar.h"
-#include "Conn.h"
 #include "Event.h"
 #include "Sessions.h"
 #include "Reporter.h"
 #include "Timer.h"
+#include "iosource/IOSource.h"
 #include "analyzer/protocol/pia/PIA.h"
 #include "binpac.h"
 #include "TunnelEncapsulation.h"
 #include "analyzer/Analyzer.h"
 #include "analyzer/Manager.h"
+#include "iosource/IOSource.h"
 
 void ConnectionTimer::Init(Connection* arg_conn, timer_func arg_timer,
-				int arg_do_expire)
+				bool arg_do_expire)
 	{
 	conn = arg_conn;
 	timer = arg_timer;
@@ -52,7 +56,6 @@ void ConnectionTimer::Dispatch(double t, int is_expire)
 
 uint64_t Connection::total_connections = 0;
 uint64_t Connection::current_connections = 0;
-uint64_t Connection::external_connections = 0;
 
 Connection::Connection(NetSessions* s, const ConnIDKey& k, double t, const ConnID* id,
                        uint32_t flow, const Packet* pkt,
@@ -87,8 +90,8 @@ Connection::Connection(NetSessions* s, const ConnIDKey& k, double t, const ConnI
 	vlan = pkt->vlan;
 	inner_vlan = pkt->inner_vlan;
 
-	conn_val = 0;
-	login_conn = 0;
+	conn_val = nullptr;
+	login_conn = nullptr;
 
 	is_active = 1;
 	skip = 0;
@@ -108,29 +111,16 @@ Connection::Connection(NetSessions* s, const ConnIDKey& k, double t, const ConnI
 	hist_seen = 0;
 	history = "";
 
-	root_analyzer = 0;
-	primary_PIA = 0;
+	root_analyzer = nullptr;
+	primary_PIA = nullptr;
 
 	++current_connections;
 	++total_connections;
-
-	TimerMgr::Tag* tag = current_iosrc->GetCurrentTag();
-	conn_timer_mgr = tag ? new TimerMgr::Tag(*tag) : 0;
 
 	if ( arg_encap )
 		encapsulation = new EncapsulationStack(*arg_encap);
 	else
 		encapsulation = 0;
-
-	if ( conn_timer_mgr )
-		{
-		++external_connections;
-		// We schedule a timer which removes this connection from memory
-		// indefinitively into the future. Ii will expire when the timer
-		// mgr is drained but not before.
-		ADD_TIMER(&Connection::RemoveConnectionTimer, 1e20, 1,
-				TIMER_REMOVE_CONNECTION);
-		}
 	}
 
 Connection::~Connection()
@@ -147,12 +137,9 @@ Connection::~Connection()
 		}
 
 	delete root_analyzer;
-	delete conn_timer_mgr;
 	delete encapsulation;
 
 	--current_connections;
-	if ( conn_timer_mgr )
-		--external_connections;
 	}
 
 void Connection::CheckEncapsulation(const EncapsulationStack* arg_encap)
@@ -172,7 +159,7 @@ void Connection::CheckEncapsulation(const EncapsulationStack* arg_encap)
 		EncapsulationStack empty;
 		Event(tunnel_changed, 0, empty.GetVectorVal());
 		delete encapsulation;
-		encapsulation = 0;
+		encapsulation = nullptr;
 		}
 
 	else if ( arg_encap )
@@ -222,7 +209,7 @@ void Connection::NextPacket(double t, int is_orig,
 		last_time = t;
 
 	current_timestamp = 0;
-	current_pkt = 0;
+	current_pkt = nullptr;
 	}
 
 void Connection::SetLifetime(double lifetime)
@@ -418,7 +405,7 @@ analyzer::Analyzer* Connection::FindAnalyzer(analyzer::ID id)
 	return root_analyzer ? root_analyzer->FindChild(id) : 0;
 	}
 
-analyzer::Analyzer* Connection::FindAnalyzer(analyzer::Tag tag)
+analyzer::Analyzer* Connection::FindAnalyzer(const analyzer::Tag& tag)
 	{
 	return root_analyzer ? root_analyzer->FindChild(tag) : 0;
 	}
@@ -511,14 +498,14 @@ void Connection::ConnectionEvent(EventHandlerPtr f, analyzer::Analyzer* a, val_l
 
 	// "this" is passed as a cookie for the event
 	mgr.QueueEvent(f, std::move(vl), SOURCE_LOCAL,
-			a ? a->GetID() : 0, GetTimerMgr(), this);
+			a ? a->GetID() : 0, timer_mgr, this);
 	}
 
 void Connection::ConnectionEventFast(EventHandlerPtr f, analyzer::Analyzer* a, val_list vl)
 	{
 	// "this" is passed as a cookie for the event
 	mgr.QueueEventFast(f, std::move(vl), SOURCE_LOCAL,
-			a ? a->GetID() : 0, GetTimerMgr(), this);
+			a ? a->GetID() : 0, timer_mgr, this);
 	}
 
 void Connection::ConnectionEvent(EventHandlerPtr f, analyzer::Analyzer* a, val_list* vl)
@@ -533,7 +520,7 @@ void Connection::Weird(const char* name, const char* addl)
 	reporter->Weird(this, name, addl ? addl : "");
 	}
 
-void Connection::AddTimer(timer_func timer, double t, int do_expire,
+void Connection::AddTimer(timer_func timer, double t, bool do_expire,
 		TimerType type)
 	{
 	if ( timers_canceled )
@@ -546,7 +533,7 @@ void Connection::AddTimer(timer_func timer, double t, int do_expire,
 		return;
 
 	Timer* conn_timer = new ConnectionTimer(this, timer, t, do_expire, type);
-	GetTimerMgr()->Add(conn_timer);
+	timer_mgr->Add(conn_timer);
 	timers.push_back(conn_timer);
 	}
 
@@ -565,23 +552,10 @@ void Connection::CancelTimers()
 	std::copy(timers.begin(), timers.end(), std::back_inserter(tmp));
 
 	for ( const auto& timer : tmp )
-		GetTimerMgr()->Cancel(timer);
+		timer_mgr->Cancel(timer);
 
 	timers_canceled = 1;
 	timers.clear();
-	}
-
-TimerMgr* Connection::GetTimerMgr() const
-	{
-	if ( ! conn_timer_mgr )
-		// Global manager.
-		return timer_mgr;
-
-	// We need to check whether the local timer manager still exists;
-	// it may have already been timed out, in which case we fall back
-	// to the global manager (though this should be rare).
-	TimerMgr* local_mgr = sessions->LookupTimerMgr(conn_timer_mgr, false);
-	return local_mgr ? local_mgr : timer_mgr;
 	}
 
 void Connection::FlipRoles()
@@ -609,7 +583,7 @@ void Connection::FlipRoles()
 	orig_flow_label = tmp_flow;
 
 	Unref(conn_val);
-	conn_val = 0;
+	conn_val = nullptr;
 
 	if ( root_analyzer )
 		root_analyzer->FlipRoles();

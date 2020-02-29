@@ -1,10 +1,16 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
+#include "Frame.h"
+
 #include <broker/error.hh>
 #include "broker/Data.h"
 
-#include "Frame.h"
+#include "Func.h"
+#include "Desc.h"
+#include "IntrusivePtr.h"
 #include "Trigger.h"
+#include "Val.h"
+#include "ID.h"
 
 vector<Frame*> g_frame_stack;
 
@@ -271,7 +277,7 @@ Frame* Frame::SelectiveClone(const id_list& selection, BroFunc* func) const
 	return other;
 	}
 
-broker::expected<broker::data> Frame::Serialize(const Frame* target, id_list selection)
+broker::expected<broker::data> Frame::Serialize(const Frame* target, const id_list& selection)
 	{
 	broker::vector rval;
 
@@ -479,7 +485,7 @@ std::pair<bool, Frame*> Frame::Unserialize(const broker::vector& data)
 			return std::make_pair(false, nullptr);
 			}
 
-		rf->frame[i] = val.detach();
+		rf->frame[i] = val.release();
 		}
 
 	return std::make_pair(true, rf);
@@ -515,7 +521,7 @@ void Frame::CaptureClosure(Frame* c, id_list arg_outer_ids)
 	// if (c) closure = c->SelectiveClone(outer_ids);
 	}
 
-void Frame::SetTrigger(Trigger* arg_trigger)
+void Frame::SetTrigger(trigger::Trigger* arg_trigger)
 	{
 	ClearTrigger();
 
@@ -529,6 +535,14 @@ void Frame::ClearTrigger()
 	{
 	Unref(trigger);
 	trigger = nullptr;
+	}
+
+void Frame::UnrefElement(int n)
+	{
+	if ( weak_refs && weak_refs[n] )
+		return;
+
+	Unref(frame[n]);
 	}
 
 bool Frame::IsOuterID(const ID* in) const

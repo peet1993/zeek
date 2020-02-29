@@ -2,20 +2,19 @@
 
 #pragma once
 
+#include "Obj.h"
+#include "Attr.h"
+#include "BroList.h"
+
 #include <string>
 #include <set>
 #include <unordered_map>
 #include <map>
 #include <list>
 
-#include "Obj.h"
-#include "Attr.h"
-#include "BroList.h"
-#include "Dict.h"
-
 // BRO types.
 
-typedef enum {
+enum TypeTag {
 	TYPE_VOID,      // 0
 	TYPE_BOOL,      // 1
 	TYPE_INT,       // 2
@@ -43,20 +42,77 @@ typedef enum {
 	TYPE_TYPE,      // 24
 	TYPE_ERROR      // 25
 #define NUM_TYPES (int(TYPE_ERROR) + 1)
-} TypeTag;
+};
 
-typedef enum {
+constexpr bool is_network_order(TypeTag tag) noexcept
+	{
+	return tag == TYPE_PORT;
+	}
+
+enum function_flavor {
 	FUNC_FLAVOR_FUNCTION,
 	FUNC_FLAVOR_EVENT,
 	FUNC_FLAVOR_HOOK
-} function_flavor;
+};
 
-typedef enum {
+enum InternalTypeTag {
 	TYPE_INTERNAL_VOID,
 	TYPE_INTERNAL_INT, TYPE_INTERNAL_UNSIGNED, TYPE_INTERNAL_DOUBLE,
 	TYPE_INTERNAL_STRING, TYPE_INTERNAL_ADDR, TYPE_INTERNAL_SUBNET,
 	TYPE_INTERNAL_OTHER, TYPE_INTERNAL_ERROR
-} InternalTypeTag;
+};
+
+constexpr InternalTypeTag to_internal_type_tag(TypeTag tag) noexcept
+	{
+	switch ( tag ) {
+	case TYPE_VOID:
+		return TYPE_INTERNAL_VOID;
+
+	case TYPE_BOOL:
+	case TYPE_INT:
+	case TYPE_ENUM:
+		return TYPE_INTERNAL_INT;
+
+	case TYPE_COUNT:
+	case TYPE_COUNTER:
+	case TYPE_PORT:
+		return TYPE_INTERNAL_UNSIGNED;
+
+	case TYPE_DOUBLE:
+	case TYPE_TIME:
+	case TYPE_INTERVAL:
+		return TYPE_INTERNAL_DOUBLE;
+
+	case TYPE_STRING:
+		return TYPE_INTERNAL_STRING;
+
+	case TYPE_ADDR:
+		return TYPE_INTERNAL_ADDR;
+
+	case TYPE_SUBNET:
+		return TYPE_INTERNAL_SUBNET;
+
+	case TYPE_PATTERN:
+	case TYPE_TIMER:
+	case TYPE_ANY:
+	case TYPE_TABLE:
+	case TYPE_UNION:
+	case TYPE_RECORD:
+	case TYPE_LIST:
+	case TYPE_FUNC:
+	case TYPE_FILE:
+	case TYPE_OPAQUE:
+	case TYPE_VECTOR:
+	case TYPE_TYPE:
+		return TYPE_INTERNAL_OTHER;
+
+	case TYPE_ERROR:
+		return TYPE_INTERNAL_ERROR;
+	}
+
+	/* this should be unreachable */
+	return TYPE_INTERNAL_VOID;
+	}
 
 // Returns the name of the type.
 extern const char* type_name(TypeTag t);
@@ -84,7 +140,6 @@ const int MATCHES_INDEX_VECTOR = 2;
 class BroType : public BroObj {
 public:
 	explicit BroType(TypeTag tag, bool base_type = false);
-	~BroType() override { }
 
 	// Performs a shallow clone operation of the Bro type.
 	// This especially means that especially for tables the types
@@ -109,7 +164,7 @@ public:
 	// if it matches and produces a vector result; and
 	// DOES_NOT_MATCH_INDEX = 0 if it can't match (or the type
 	// is not an indexable type).
-	virtual int MatchesIndex(ListExpr*& index) const;
+	virtual int MatchesIndex(ListExpr* index) const;
 
 	// Returns the type yielded by this type.  For example, if
 	// this type is a table[string] of port, then returns the "port"
@@ -246,12 +301,12 @@ public:
 		return (TypeType*) this;
 		}
 
-	int IsSet() const
+	bool IsSet() const
 		{
 		return tag == TYPE_TABLE && (YieldType() == 0);
 		}
 
-	int IsTable() const
+	bool IsTable() const
 		{
 		return tag == TYPE_TABLE && (YieldType() != 0);
 		}
@@ -319,12 +374,7 @@ public:
 
 	void Describe(ODesc* d) const override;
 
-	unsigned int MemoryAllocation() const override
-		{
-		return BroType::MemoryAllocation()
-			+ padded_sizeof(*this) - padded_sizeof(BroType)
-			+ types.MemoryAllocation() - padded_sizeof(types);
-		}
+	unsigned int MemoryAllocation() const override;
 
 protected:
 	BroType* pure_type;
@@ -333,7 +383,7 @@ protected:
 
 class IndexType : public BroType {
 public:
-	int MatchesIndex(ListExpr*& index) const override;
+	int MatchesIndex(ListExpr* index) const override;
 
 	TypeList* Indices() const		{ return indices; }
 	const type_list* IndexTypes() const	{ return indices->Types(); }
@@ -409,7 +459,7 @@ public:
 	void ClearYieldType(function_flavor arg_flav)
 		{ Unref(yield); yield = 0; flavor = arg_flav; }
 
-	int MatchesIndex(ListExpr*& index) const override;
+	int MatchesIndex(ListExpr* index) const override;
 	int CheckArgs(const type_list* args, bool is_init = false) const;
 
 	TypeList* ArgTypes() const	{ return arg_types; }
@@ -623,7 +673,7 @@ public:
 	BroType* YieldType() override;
 	const BroType* YieldType() const override;
 
-	int MatchesIndex(ListExpr*& index) const override;
+	int MatchesIndex(ListExpr* index) const override;
 
 	// Returns true if this table type is "unspecified", which is what one
 	// gets using an empty "vector()" constructor.
@@ -649,16 +699,16 @@ extern OpaqueType* x509_opaque_type;
 extern OpaqueType* ocsp_resp_opaque_type;
 extern OpaqueType* paraglob_type;
 
-// Returns the Bro basic (non-parameterized) type with the given type.
+// Returns the basic (non-parameterized) type with the given type.
 // The reference count of the type is not increased.
 BroType* base_type_no_ref(TypeTag tag);
 
-// Returns the BRO basic (non-parameterized) type with the given type.
+// Returns the basic (non-parameterized) type with the given type.
 // The caller assumes responsibility for a reference to the type.
 inline BroType* base_type(TypeTag tag)
 	{ return base_type_no_ref(tag)->Ref(); }
 
-// Returns the BRO basic error type.
+// Returns the basic error type.
 inline BroType* error_type()	{ return base_type(TYPE_ERROR); }
 
 // True if the two types are equivalent.  If is_init is true then the test is
@@ -698,53 +748,53 @@ extern BroType* init_type(Expr* init);
 // Returns true if argument is an atomic type.
 bool is_atomic_type(const BroType* t);
 
-// True if the given type tag corresponds to an integral type.
-#define IsIntegral(t)	(t == TYPE_INT || t == TYPE_COUNT || t == TYPE_COUNTER)
-
-// True if the given type tag corresponds to an arithmetic type.
-#define IsArithmetic(t)	(IsIntegral(t) || t == TYPE_DOUBLE)
-
-// True if the given type tag corresponds to a boolean type.
-#define IsBool(t)	(t == TYPE_BOOL)
-
-// True if the given type tag corresponds to an interval type.
-#define IsInterval(t)	(t == TYPE_INTERVAL)
-
-// True if the given type tag corresponds to a record type.
-#define IsRecord(t)	(t == TYPE_RECORD || t == TYPE_UNION)
-
-// True if the given type tag corresponds to a function type.
-#define IsFunc(t)	(t == TYPE_FUNC)
-
-// True if the given type type is a vector.
-#define IsVector(t)	(t == TYPE_VECTOR)
-
-// True if the given type type is a string.
-#define IsString(t)	(t == TYPE_STRING)
-
 // True if the given type tag corresponds to type that can be assigned to.
 extern int is_assignable(BroType* t);
 
+// True if the given type tag corresponds to an integral type.
+inline bool IsIntegral(TypeTag t) { return (t == TYPE_INT || t == TYPE_COUNT || t == TYPE_COUNTER); }
+
+// True if the given type tag corresponds to an arithmetic type.
+inline bool IsArithmetic(TypeTag t)	{ return (IsIntegral(t) || t == TYPE_DOUBLE); }
+
+// True if the given type tag corresponds to a boolean type.
+inline bool IsBool(TypeTag t)	{ return (t == TYPE_BOOL); }
+
+// True if the given type tag corresponds to an interval type.
+inline bool IsInterval(TypeTag t)	{ return (t == TYPE_INTERVAL); }
+
+// True if the given type tag corresponds to a record type.
+inline bool IsRecord(TypeTag t)	{ return (t == TYPE_RECORD || t == TYPE_UNION); }
+
+// True if the given type tag corresponds to a function type.
+inline bool IsFunc(TypeTag t)	{ return (t == TYPE_FUNC); }
+
+// True if the given type type is a vector.
+inline bool IsVector(TypeTag t)	{ return (t == TYPE_VECTOR); }
+
+// True if the given type type is a string.
+inline bool IsString(TypeTag t)	{ return (t == TYPE_STRING); }
+
 // True if the given type tag corresponds to the error type.
-#define IsErrorType(t)	(t == TYPE_ERROR)
+inline bool IsErrorType(TypeTag t)	{ return (t == TYPE_ERROR); }
 
 // True if both tags are integral types.
-#define BothIntegral(t1, t2) (IsIntegral(t1) && IsIntegral(t2))
+inline bool BothIntegral(TypeTag t1, TypeTag t2) { return (IsIntegral(t1) && IsIntegral(t2)); }
 
 // True if both tags are arithmetic types.
-#define BothArithmetic(t1, t2) (IsArithmetic(t1) && IsArithmetic(t2))
+inline bool BothArithmetic(TypeTag t1, TypeTag t2) { return (IsArithmetic(t1) && IsArithmetic(t2)); }
 
 // True if either tags is an arithmetic type.
-#define EitherArithmetic(t1, t2) (IsArithmetic(t1) || IsArithmetic(t2))
+inline bool EitherArithmetic(TypeTag t1, TypeTag t2) { return (IsArithmetic(t1) || IsArithmetic(t2)); }
 
 // True if both tags are boolean types.
-#define BothBool(t1, t2) (IsBool(t1) && IsBool(t2))
+inline bool BothBool(TypeTag t1, TypeTag t2) { return (IsBool(t1) && IsBool(t2)); }
 
 // True if both tags are interval types.
-#define BothInterval(t1, t2) (IsInterval(t1) && IsInterval(t2))
+inline bool BothInterval(TypeTag t1, TypeTag t2) { return (IsInterval(t1) && IsInterval(t2)); }
 
 // True if both tags are string types.
-#define BothString(t1, t2) (IsString(t1) && IsString(t2))
+inline bool BothString(TypeTag t1, TypeTag t2) { return (IsString(t1) && IsString(t2)); }
 
 // True if either tag is the error type.
-#define EitherError(t1, t2) (IsErrorType(t1) || IsErrorType(t2))
+inline bool EitherError(TypeTag t1, TypeTag t2) { return (IsErrorType(t1) || IsErrorType(t2)); }

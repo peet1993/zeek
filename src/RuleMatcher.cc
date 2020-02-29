@@ -1,15 +1,25 @@
+
+#include "zeek-config.h"
+#include "RuleMatcher.h"
+
 #include <algorithm>
 #include <functional>
 
-#include "zeek-config.h"
-
+#include "RuleAction.h"
+#include "RuleCondition.h"
+#include "BroString.h"
+#include "ID.h"
+#include "IntrusivePtr.h"
+#include "IntSet.h"
+#include "IP.h"
 #include "analyzer/Analyzer.h"
-#include "RuleMatcher.h"
 #include "DFA.h"
+#include "DebugLogger.h"
 #include "NetVar.h"
 #include "Scope.h"
 #include "File.h"
 #include "Reporter.h"
+#include "module_util.h"
 
 // FIXME: Things that are not fully implemented/working yet:
 //
@@ -54,7 +64,7 @@ RuleHdrTest::RuleHdrTest(Prot arg_prot, Comp arg_comp, vector<IPPrefix> arg_v)
 	size = 0;
 	comp = arg_comp;
 	vals = new maskedvalue_list;
-	prefix_vals = arg_v;
+	prefix_vals = std::move(arg_v);
 	sibling = 0;
 	child = 0;
 	pattern_rules = 0;
@@ -121,7 +131,10 @@ RuleHdrTest::~RuleHdrTest()
 	for ( int i = 0; i < Rule::TYPES; ++i )
 		{
 		for ( auto pset : psets[i] )
+			{
 			delete pset->re;
+			delete pset;
+			}
 		}
 
 	delete ruleset;
@@ -231,7 +244,7 @@ void RuleMatcher::Delete(RuleHdrTest* node)
 	delete node;
 	}
 
-bool RuleMatcher::ReadFiles(const name_list& files)
+bool RuleMatcher::ReadFiles(const std::vector<std::string>& files)
 	{
 #ifdef USE_PERFTOOLS_DEBUG
 	HeapLeakChecker::Disabler disabler;
@@ -239,18 +252,18 @@ bool RuleMatcher::ReadFiles(const name_list& files)
 
 	parse_error = false;
 
-	for ( int i = 0; i < files.length(); ++i )
+	for ( const auto& f : files )
 		{
-		rules_in = open_file(find_file(files[i], bro_path(), ".sig"));
+		rules_in = open_file(find_file(f, bro_path(), ".sig"));
 
 		if ( ! rules_in )
 			{
-			reporter->Error("Can't open signature file %s", files[i]);
+			reporter->Error("Can't open signature file %s", f.data());
 			return false;
 			}
 
 		rules_line_number = 0;
-		current_rule_file = files[i];
+		current_rule_file = f.data();
 		rules_parse();
 		fclose(rules_in);
 		}
@@ -1256,17 +1269,14 @@ void RuleMatcher::DumpStateStats(BroFile* f, RuleHdrTest* hdr_test)
 
 static Val* get_bro_val(const char* label)
 	{
-	ID* id = lookup_ID(label, GLOBAL_MODULE_NAME, false);
+	auto id = lookup_ID(label, GLOBAL_MODULE_NAME, false);
 	if ( ! id )
 		{
 		rules_error("unknown script-level identifier", label);
 		return 0;
 		}
 
-	Val* rval = id->ID_Val();
-	Unref(id);
-
-	return rval;
+	return id->ID_Val();
 	}
 
 

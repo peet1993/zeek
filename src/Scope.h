@@ -2,15 +2,15 @@
 
 #pragma once
 
+#include <utility>
 #include <string>
 #include <map>
 
-#include "Dict.h"
 #include "Obj.h"
 #include "BroList.h"
 #include "TraverseTypes.h"
-#include "module_util.h"
 
+template <class T> class IntrusivePtr;
 class ID;
 class BroType;
 class ListVal;
@@ -20,18 +20,34 @@ public:
 	explicit Scope(ID* id, attr_list* al);
 	~Scope() override;
 
-	ID* Lookup(const std::string& name) const
+	template<typename N>
+	ID* Lookup(N&& name) const
 		{
-		const auto& entry = local.find(name);
+		const auto& entry = local.find(std::forward<N>(name));
+
 		if ( entry != local.end() )
 			return entry->second;
 
 		return nullptr;
 		}
-	void Insert(const std::string& name, ID* id)	{ local[name] = id; }
-	ID* Remove(const std::string& name)
+
+	template<typename N>
+	void Insert(N&& name, ID* id)
 		{
-		const auto& entry = local.find(name);
+		auto [it, inserted] = local.emplace(std::forward<N>(name), id);
+
+		if ( ! inserted )
+			{
+			Unref(it->second);
+			it->second = id;
+			}
+		}
+
+	template<typename N>
+	ID* Remove(N&& name)
+		{
+		const auto& entry = local.find(std::forward<N>(name));
+
 		if ( entry != local.end() )
 			{
 			ID* id = entry->second;
@@ -47,7 +63,7 @@ public:
 	BroType* ReturnType() const	{ return return_type; }
 
 	size_t Length() const		{ return local.size(); }
-	std::map<std::string, ID*>& Vars()	{ return local; }
+	const std::map<std::string, ID*>& Vars()	{ return local; }
 
 	ID* GenerateTemporary(const char* name);
 
@@ -74,18 +90,19 @@ protected:
 extern bool in_debug;
 
 // If no_global is true, don't search in the default "global" namespace.
-// This passed ownership of a ref'ed ID to the caller.
-extern ID* lookup_ID(const char* name, const char* module,
-		     bool no_global = false, bool same_module_only = false,
-		     bool check_export = true);
-extern ID* install_ID(const char* name, const char* module_name,
-			bool is_global, bool is_export);
+extern IntrusivePtr<ID> lookup_ID(const char* name, const char* module,
+                                  bool no_global = false,
+                                  bool same_module_only = false,
+                                  bool check_export = true);
+
+extern IntrusivePtr<ID> install_ID(const char* name, const char* module_name,
+                                   bool is_global, bool is_export);
 
 extern void push_scope(ID* id, attr_list* attrs);
 extern void push_existing_scope(Scope* scope);
 
-// Returns the one popped off; it's not deleted.
-extern Scope* pop_scope();
+// Returns the one popped off.
+extern IntrusivePtr<Scope> pop_scope();
 extern Scope* current_scope();
 extern Scope* global_scope();
 

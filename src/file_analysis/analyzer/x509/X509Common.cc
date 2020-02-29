@@ -2,6 +2,7 @@
 
 #include "X509Common.h"
 #include "x509-extension_pac.h"
+#include "Reporter.h"
 
 #include "events.bif.h"
 #include "ocsp_events.bif.h"
@@ -15,7 +16,7 @@
 
 using namespace file_analysis;
 
-X509Common::X509Common(file_analysis::Tag arg_tag, RecordVal* arg_args, File* arg_file)
+X509Common::X509Common(const file_analysis::Tag& arg_tag, RecordVal* arg_args, File* arg_file)
 	: file_analysis::Analyzer(arg_tag, arg_args, arg_file)
 	{
 	}
@@ -229,7 +230,7 @@ void file_analysis::X509Common::ParseSignedCertificateTimestamps(X509_EXTENSION*
 	delete conn;
 	}
 
-void file_analysis::X509Common::ParseExtension(X509_EXTENSION* ex, EventHandlerPtr h, bool global)
+void file_analysis::X509Common::ParseExtension(X509_EXTENSION* ex, const EventHandlerPtr& h, bool global)
 	{
 	char name[256];
 	char oid[256];

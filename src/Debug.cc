@@ -2,6 +2,8 @@
 
 #include "zeek-config.h"
 
+#include "Debug.h"
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <signal.h>
@@ -11,13 +13,22 @@
 using namespace std;
 
 #include "util.h"
-#include "Debug.h"
 #include "DebugCmds.h"
 #include "DbgBreakpoint.h"
+#include "ID.h"
+#include "IntrusivePtr.h"
+#include "Expr.h"
 #include "Stmt.h"
+#include "Frame.h"
 #include "Func.h"
+#include "IntrusivePtr.h"
 #include "Scope.h"
 #include "PolicyFile.h"
+#include "Desc.h"
+#include "Reporter.h"
+#include "Val.h"
+#include "module_util.h"
+#include "input.h"
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
@@ -186,13 +197,13 @@ void get_first_statement(Stmt* list, Stmt*& first, Location& loc)
 static void parse_function_name(vector<ParseLocationRec>& result,
 				ParseLocationRec& plr, const string& s)
 	{ // function name
-	ID* id = lookup_ID(s.c_str(), current_module.c_str());
+	auto id = lookup_ID(s.c_str(), current_module.c_str());
+
 	if ( ! id )
 		{
 		string fullname = make_full_var_name(current_module.c_str(), s.c_str());
 		debug_msg("Function %s not defined.\n", fullname.c_str());
 		plr.type = plrUnknown;
-		Unref(id);
 		return;
 		}
 
@@ -200,7 +211,6 @@ static void parse_function_name(vector<ParseLocationRec>& result,
 		{
 		debug_msg("Function %s not declared.\n", id->Name());
 		plr.type = plrUnknown;
-		Unref(id);
 		return;
 		}
 
@@ -208,7 +218,6 @@ static void parse_function_name(vector<ParseLocationRec>& result,
 		{
 		debug_msg("Function %s declared but not defined.\n", id->Name());
 		plr.type = plrUnknown;
-		Unref(id);
 		return;
 		}
 
@@ -219,11 +228,8 @@ static void parse_function_name(vector<ParseLocationRec>& result,
 		{
 		debug_msg("Function %s is a built-in function\n", id->Name());
 		plr.type = plrUnknown;
-		Unref(id);
 		return;
 		}
-
-	Unref(id);
 
 	Stmt* body = 0;	// the particular body we care about; 0 = all
 
@@ -942,7 +948,7 @@ extern YYLTYPE yylloc;	// holds start line and column of token
 extern int line_number;
 extern const char* filename;
 
-Val* dbg_eval_expr(const char* expr)
+IntrusivePtr<Val> dbg_eval_expr(const char* expr)
 	{
 	// Push the current frame's associated scope.
 	// Note: g_debugger_state.curr_frame_idx is the user-visible number,
@@ -959,7 +965,10 @@ Val* dbg_eval_expr(const char* expr)
 
 	const BroFunc* func = frame->GetFunction();
 	if ( func )
+		{
+		Ref(func->GetScope());
 		push_existing_scope(func->GetScope());
+		}
 
 	// ### Possibly push a debugger-local scope?
 
@@ -974,7 +983,7 @@ Val* dbg_eval_expr(const char* expr)
 	yylloc.first_line = yylloc.last_line = line_number = 1;
 
 	// Parse the thing into an expr.
-	Val* result = 0;
+	IntrusivePtr<Val> result;
 	if ( yyparse() )
 		{
 		if ( g_curr_debug_error )

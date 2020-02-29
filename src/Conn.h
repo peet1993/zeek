@@ -7,13 +7,12 @@
 #include <string>
 
 #include "Dict.h"
-#include "Val.h"
 #include "Timer.h"
-#include "RuleMatcher.h"
+#include "Rule.h"
 #include "IPAddr.h"
-#include "TunnelEncapsulation.h"
 #include "UID.h"
 #include "WeirdState.h"
+#include "iosource/Packet.h"
 
 #include "analyzer/Tag.h"
 #include "analyzer/Analyzer.h"
@@ -25,6 +24,9 @@ class LoginConn;
 class RuleHdrTest;
 class Specific_RE_Matcher;
 class RuleEndpointState;
+class EncapsulationStack;
+class Val;
+class RecordVal;
 
 namespace analyzer { class TransportLayerAnalyzer; }
 
@@ -109,7 +111,7 @@ public:
 	void FlipRoles();
 
 	analyzer::Analyzer* FindAnalyzer(analyzer::ID id);
-	analyzer::Analyzer* FindAnalyzer(analyzer::Tag tag);	// find first in tree.
+	analyzer::Analyzer* FindAnalyzer(const analyzer::Tag& tag);	// find first in tree.
 	analyzer::Analyzer* FindAnalyzer(const char* name);	// find first in tree.
 
 	TransportProto ConnTransport() const { return proto; }
@@ -227,11 +229,6 @@ public:
 	void Describe(ODesc* d) const override;
 	void IDString(ODesc* d) const;
 
-	TimerMgr* GetTimerMgr() const;
-
-	// Returns true if connection has been received externally.
-	bool IsExternal() const	{ return conn_timer_mgr != 0; }
-
 	// Statistics.
 
 	// Just a lower bound.
@@ -242,8 +239,6 @@ public:
 		{ return total_connections; }
 	static uint64_t CurrentConnections()
 		{ return current_connections; }
-	static uint64_t CurrentExternalConnections()
-		{ return external_connections; }
 
 	// Returns true if the history was already seen, false otherwise.
 	int CheckHistory(uint32_t mask, char code)
@@ -303,7 +298,7 @@ protected:
 	// Add the given timer to expire at time t.  If do_expire
 	// is true, then the timer is also evaluated when Bro terminates,
 	// otherwise not.
-	void AddTimer(timer_func timer, double t, int do_expire,
+	void AddTimer(timer_func timer, double t, bool do_expire,
 			TimerType type);
 
 	void RemoveTimer(Timer* t);
@@ -319,8 +314,6 @@ protected:
 	ConnIDKey key;
 	bool key_valid;
 
-	// Timer manager to use for this conn (or nil).
-	TimerMgr::Tag* conn_timer_mgr;
 	timer_list timers;
 
 	IPAddr orig_addr;
@@ -352,7 +345,6 @@ protected:
 	// Count number of connections.
 	static uint64_t total_connections;
 	static uint64_t current_connections;
-	static uint64_t external_connections;
 
 	string history;
 	uint32_t hist_seen;
@@ -367,7 +359,7 @@ protected:
 class ConnectionTimer : public Timer {
 public:
 	ConnectionTimer(Connection* arg_conn, timer_func arg_timer,
-			double arg_t, int arg_do_expire, TimerType arg_type)
+			double arg_t, bool arg_do_expire, TimerType arg_type)
 		: Timer(arg_t, arg_type)
 		{ Init(arg_conn, arg_timer, arg_do_expire); }
 	~ConnectionTimer() override;
@@ -377,11 +369,11 @@ public:
 protected:
 	ConnectionTimer()	{}
 
-	void Init(Connection* conn, timer_func timer, int do_expire);
+	void Init(Connection* conn, timer_func timer, bool do_expire);
 
 	Connection* conn;
 	timer_func timer;
-	int do_expire;
+	bool do_expire;
 };
 
 #define ADD_TIMER(timer, t, do_expire, type) \

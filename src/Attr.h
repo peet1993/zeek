@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Obj.h"
+#include "BroList.h"
 
 class Expr;
 
@@ -27,6 +28,7 @@ typedef enum {
 	ATTR_ERROR_HANDLER,
 	ATTR_TYPE_COLUMN,	// for input framework
 	ATTR_TRACKED,	// hidden attribute, tracked by NotifierRegistry
+	ATTR_ON_CHANGE, // for table change tracking
 	ATTR_DEPRECATED,
 #define NUM_ATTRS (int(ATTR_DEPRECATED) + 1)
 } attr_tag;

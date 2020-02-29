@@ -4,6 +4,12 @@
 
 #include "../PktSrc.h"
 
+extern "C" {
+#include <pcap.h>
+}
+
+#include <sys/types.h> // for u_char
+
 namespace iosource {
 namespace pcap {
 
@@ -28,7 +34,6 @@ private:
 	void OpenLive();
 	void OpenOffline();
 	void PcapError(const char* where = 0);
-	void SetHdrSize();
 
 	Properties props;
 	Stats stats;
@@ -36,8 +41,6 @@ private:
 	pcap_t *pd;
 
 	struct pcap_pkthdr current_hdr;
-	struct pcap_pkthdr last_hdr;
-	const u_char* last_data;
 };
 
 }

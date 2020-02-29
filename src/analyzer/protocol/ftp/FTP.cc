@@ -1,15 +1,17 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
 #include "zeek-config.h"
+#include "FTP.h"
 
 #include <stdlib.h>
 
+#include "BroString.h"
 #include "NetVar.h"
-#include "FTP.h"
 #include "Event.h"
 #include "Base64.h"
 #include "analyzer/Manager.h"
 #include "analyzer/protocol/login/NVT.h"
+#include "RuleMatcher.h"
 
 #include "events.bif.h"
 
@@ -83,7 +85,7 @@ void FTP_Analyzer::DeliverStream(int length, const u_char* data, bool orig)
 		StringVal* cmd_str;
 
 		line = skip_whitespace(line, end_of_line);
-		get_word(length, line, cmd_len, cmd);
+		get_word(end_of_line - line, line, cmd_len, cmd);
 		line = skip_whitespace(line + cmd_len, end_of_line);
 
 		if ( cmd_len == 0 )
@@ -224,8 +226,16 @@ void FTP_ADAT_Analyzer::DeliverStream(int len, const u_char* data, bool orig)
 				// framing is supposed to be required for the initial context
 				// token, but GSI doesn't do that and starts right in on a
 				// TLS/SSL handshake, so look for that to identify it.
-				const u_char* msg = decoded_adat->Bytes();
-				int msg_len = decoded_adat->Len();
+				const u_char* msg = nullptr;
+				int msg_len = 0;
+
+				if ( decoded_adat )
+					{
+					msg = decoded_adat->Bytes();
+					msg_len = decoded_adat->Len();
+					}
+				else
+					Weird("ftp_adat_bad_first_token_encoding");
 
 				// Just check that it looks like a viable TLS/SSL handshake
 				// record from the first byte (content type of 0x16) and

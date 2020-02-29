@@ -4,11 +4,17 @@
 
 #include "Type.h"
 #include "Attr.h"
+#include "Desc.h"
 #include "Expr.h"
 #include "Scope.h"
+#include "Val.h"
+#include "Var.h"
 #include "Reporter.h"
 #include "zeekygen/Manager.h"
+#include "zeekygen/IdentifierInfo.h"
+#include "zeekygen/ScriptInfo.h"
 #include "zeekygen/utils.h"
+#include "module_util.h"
 
 #include <string>
 #include <list>
@@ -19,7 +25,7 @@ BroType::TypeAliasMap BroType::type_aliases;
 // Note: This function must be thread-safe.
 const char* type_name(TypeTag t)
 	{
-	static const char* type_names[int(NUM_TYPES)] = {
+	static constexpr const char* type_names[int(NUM_TYPES)] = {
 		"void",      // 0
 		"bool",      // 1
 		"int",       // 2
@@ -55,70 +61,10 @@ const char* type_name(TypeTag t)
 	}
 
 BroType::BroType(TypeTag t, bool arg_base_type)
+	: tag(t), internal_tag(to_internal_type_tag(tag)),
+	  is_network_order(::is_network_order(t)),
+	  base_type(arg_base_type)
 	{
-	tag = t;
-	is_network_order = 0;
-	base_type = arg_base_type;
-
-	switch ( tag ) {
-	case TYPE_VOID:
-		internal_tag = TYPE_INTERNAL_VOID;
-		break;
-
-	case TYPE_BOOL:
-	case TYPE_INT:
-	case TYPE_ENUM:
-		internal_tag = TYPE_INTERNAL_INT;
-		break;
-
-	case TYPE_COUNT:
-	case TYPE_COUNTER:
-		internal_tag = TYPE_INTERNAL_UNSIGNED;
-		break;
-
-	case TYPE_PORT:
-		internal_tag = TYPE_INTERNAL_UNSIGNED;
-		is_network_order = 1;
-		break;
-
-	case TYPE_DOUBLE:
-	case TYPE_TIME:
-	case TYPE_INTERVAL:
-		internal_tag = TYPE_INTERNAL_DOUBLE;
-		break;
-
-	case TYPE_STRING:
-		internal_tag = TYPE_INTERNAL_STRING;
-		break;
-
-	case TYPE_ADDR:
-		internal_tag = TYPE_INTERNAL_ADDR;
-		break;
-
-	case TYPE_SUBNET:
-		internal_tag = TYPE_INTERNAL_SUBNET;
-		break;
-
-	case TYPE_PATTERN:
-	case TYPE_TIMER:
-	case TYPE_ANY:
-	case TYPE_TABLE:
-	case TYPE_UNION:
-	case TYPE_RECORD:
-	case TYPE_LIST:
-	case TYPE_FUNC:
-	case TYPE_FILE:
-	case TYPE_OPAQUE:
-	case TYPE_VECTOR:
-	case TYPE_TYPE:
-		internal_tag = TYPE_INTERNAL_OTHER;
-		break;
-
-	case TYPE_ERROR:
-		internal_tag = TYPE_INTERNAL_ERROR;
-		break;
-	}
-
 	}
 
 BroType* BroType::ShallowClone()
@@ -147,7 +93,7 @@ BroType* BroType::ShallowClone()
 	return nullptr;
 	}
 
-int BroType::MatchesIndex(ListExpr*& index) const
+int BroType::MatchesIndex(ListExpr* const index) const
 	{
 	if ( Tag() == TYPE_STRING )
 		{
@@ -267,13 +213,20 @@ void TypeList::Describe(ODesc* d) const
 		}
 	}
 
+unsigned int TypeList::MemoryAllocation() const
+	{
+	return BroType::MemoryAllocation()
+		+ padded_sizeof(*this) - padded_sizeof(BroType)
+		+ types.MemoryAllocation() - padded_sizeof(types);
+	}
+
 IndexType::~IndexType()
 	{
 	Unref(indices);
 	Unref(yield_type);
 	}
 
-int IndexType::MatchesIndex(ListExpr*& index) const
+int IndexType::MatchesIndex(ListExpr* const index) const
 	{
 	// If we have a type indexed by subnets, addresses are ok.
 	const type_list* types = indices->Types();
@@ -464,8 +417,7 @@ SetType::SetType(TypeList* ind, ListExpr* arg_elements) : TableType(ind, 0)
 
 				for ( int i = 2; t && i < tl->length(); ++i )
 					{
-					BroType* t_new =
-						merge_types(t, (*tl)[i]);
+					BroType* t_new = merge_types(t, (*tl)[i]);
 					Unref(t);
 					t = t_new;
 					}
@@ -485,13 +437,11 @@ SetType::SetType(TypeList* ind, ListExpr* arg_elements) : TableType(ind, 0)
 
 SetType* SetType::ShallowClone()
 	{
-	// constructor only consumes indices when elements
-	// is set
-	if ( elements && indices )
-		{
+	if ( elements )
 		elements->Ref();
+
+	if ( indices )
 		indices->Ref();
-		}
 
 	return new SetType(indices, elements);
 	}
@@ -576,7 +526,7 @@ const BroType* FuncType::YieldType() const
 	return yield;
 	}
 
-int FuncType::MatchesIndex(ListExpr*& index) const
+int FuncType::MatchesIndex(ListExpr* const index) const
 	{
 	return check_and_promote_args(index, args) ?
 			MATCHES_INDEX_SCALAR : DOES_NOT_MATCH_INDEX;
@@ -754,7 +704,7 @@ Val* RecordType::FieldDefault(int field) const
 
 	const Attr* def_attr = td->attrs->FindAttr(ATTR_DEFAULT);
 
-	return def_attr ? def_attr->AttrExpr()->Eval(0) : 0;
+	return def_attr ? def_attr->AttrExpr()->Eval(nullptr).release() : nullptr;
 	}
 
 int RecordType::FieldOffset(const char* field) const
@@ -1221,18 +1171,18 @@ void EnumType::CheckAndAddName(const string& module_name, const char* name,
 		return;
 		}
 
-	ID* id = lookup_ID(name, module_name.c_str());
+	auto id = lookup_ID(name, module_name.c_str());
 
 	if ( ! id )
 		{
 		id = install_ID(name, module_name.c_str(), true, is_export);
-		id->SetType(this->Ref());
+		id->SetType({NewRef{}, this});
 		id->SetEnumConst();
 
 		if ( deprecation )
 			id->MakeDeprecated(deprecation);
 
-		zeekygen_mgr->Identifier(id);
+		zeekygen_mgr->Identifier(std::move(id));
 		}
 	else
 		{
@@ -1244,13 +1194,10 @@ void EnumType::CheckAndAddName(const string& module_name, const char* name,
 		     || (id->HasVal() && val != id->ID_Val()->AsEnum())
 		     || (names.find(fullname) != names.end() && names[fullname] != val) )
 			{
-			Unref(id);
 			reporter->Error("identifier or enumerator value in enumerated type definition already exists");
 			SetError();
 			return;
 			}
-
-		Unref(id);
 		}
 
 	AddNameInternal(module_name, name, val, is_export);
@@ -1406,6 +1353,9 @@ VectorType::VectorType(BroType* element_type)
 
 VectorType* VectorType::ShallowClone()
 	{
+	if ( yield_type )
+		yield_type->Ref();
+
 	return new VectorType(yield_type);
 	}
 
@@ -1448,7 +1398,7 @@ const BroType* VectorType::YieldType() const
 	return yield_type;
 	}
 
-int VectorType::MatchesIndex(ListExpr*& index) const
+int VectorType::MatchesIndex(ListExpr* const index) const
 	{
 	expr_list& el = index->Exprs();
 
@@ -2114,19 +2064,19 @@ BroType* init_type(Expr* init)
 	{
 	if ( init->Tag() != EXPR_LIST )
 		{
-		BroType* t = init->InitType();
+		auto t = init->InitType();
+
 		if ( ! t )
-			return 0;
+			return nullptr;
 
 		if ( t->Tag() == TYPE_LIST &&
 		     t->AsTypeList()->Types()->length() != 1 )
 			{
 			init->Error("list used in scalar initialization");
-			Unref(t);
-			return 0;
+			return nullptr;
 			}
 
-		return t;
+		return t.release();
 		}
 
 	ListExpr* init_list = init->AsListExpr();
@@ -2135,64 +2085,59 @@ BroType* init_type(Expr* init)
 	if ( el.length() == 0 )
 		{
 		init->Error("empty list in untyped initialization");
-		return 0;
+		return nullptr;
 		}
 
 	// Could be a record, a set, or a list of table elements.
 	Expr* e0 = el[0];
+
 	if ( e0->IsRecordElement(0) )
 		// ListExpr's know how to build a record from their
 		// components.
-		return init_list->InitType();
+		return init_list->InitType().release();
 
-	BroType* t = e0->InitType();
+	auto t = e0->InitType();
+
 	if ( t )
-		t = reduce_type(t);
+		t = {NewRef{}, reduce_type(t.get())};
+
 	if ( ! t )
-		return 0;
+		return nullptr;
 
 	for ( int i = 1; t && i < el.length(); ++i )
 		{
-		BroType* el_t = el[i]->InitType();
-		BroType* ti = el_t ? reduce_type(el_t) : 0;
+		auto el_t = el[i]->InitType();
+		BroType* ti = el_t ? reduce_type(el_t.get()) : 0;
+
 		if ( ! ti )
-			{
-			Unref(t);
-			return 0;
-			}
+			return nullptr;
 
-		if ( same_type(t, ti) )
-			{
-			Unref(ti);
+		if ( same_type(t.get(), ti) )
 			continue;
-			}
 
-		BroType* t_merge = merge_types(t, ti);
-		Unref(t);
-		Unref(ti);
-		t = t_merge;
+		t = IntrusivePtr<BroType>{AdoptRef{}, merge_types(t.get(), ti)};
 		}
 
 	if ( ! t )
 		{
 		init->Error("type error in initialization");
-		return 0;
+		return nullptr;
 		}
 
 	if ( t->Tag() == TYPE_TABLE && ! t->AsTableType()->IsSet() )
 		// A list of table elements.
-		return t;
+		return t.release();
 
 	// A set.  If the index type isn't yet a type list, make
 	// it one, as that's what's required for creating a set type.
 	if ( t->Tag() != TYPE_LIST )
 		{
-		TypeList* tl = new TypeList(t);
-		tl->Append(t);
-		t = tl;
+		auto tl = make_intrusive<TypeList>(t.get()->Ref());
+		tl->Append(t.release());
+		t = std::move(tl);
 		}
 
-	return new SetType(t->AsTypeList(), 0);
+	return new SetType(t.release()->AsTypeList(), 0);
 	}
 
 bool is_atomic_type(const BroType* t)

@@ -7,6 +7,7 @@
 #include "binpac.h"
 
 #include "analyzer/protocol/pia/PIA.h"
+#include "../BroString.h"
 #include "../Event.h"
 
 namespace analyzer {
@@ -403,7 +404,7 @@ bool Analyzer::AddChildAnalyzer(Analyzer* analyzer, bool init)
 	return true;
 	}
 
-Analyzer* Analyzer::AddChildAnalyzer(Tag analyzer)
+Analyzer* Analyzer::AddChildAnalyzer(const Tag& analyzer)
 	{
 	if ( HasChildAnalyzer(analyzer) )
 		return nullptr;
@@ -605,7 +606,7 @@ void Analyzer::RemoveSupportAnalyzer(SupportAnalyzer* analyzer)
 	return;
 	}
 
-bool Analyzer::HasSupportAnalyzer(Tag tag, bool orig)
+bool Analyzer::HasSupportAnalyzer(const Tag& tag, bool orig)
 	{
 	SupportAnalyzer* s = orig ? orig_supporters : resp_supporters;
 	for ( ; s; s = s->sibling )
@@ -731,7 +732,7 @@ void Analyzer::AddTimer(analyzer_timer_func timer, double t,
 	Timer* analyzer_timer = new
 		AnalyzerTimer(this, timer, t, do_expire, type);
 
-	Conn()->GetTimerMgr()->Add(analyzer_timer);
+	timer_mgr->Add(analyzer_timer);
 	timers.push_back(analyzer_timer);
 	}
 
@@ -751,7 +752,7 @@ void Analyzer::CancelTimers()
 
 	// TODO: could be a for_each
 	for ( auto timer : tmp )
-		Conn()->GetTimerMgr()->Cancel(timer);
+		timer_mgr->Cancel(timer);
 
 	timers_canceled = 1;
 	timers.clear();
@@ -923,4 +924,3 @@ void TransportLayerAnalyzer::PacketContents(const u_char* data, int len)
 		Event(packet_contents, contents);
 		}
 	}
-

@@ -3,15 +3,9 @@
 #pragma once
 
 #include "Configuration.h"
-#include "Info.h"
-#include "PackageInfo.h"
-#include "ScriptInfo.h"
-#include "IdentifierInfo.h"
 
 #include "Reporter.h"
 #include "ID.h"
-#include "Type.h"
-#include "Val.h"
 
 #include <string>
 #include <vector>
@@ -20,7 +14,12 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+class TypeDecl;
+
 namespace zeekygen {
+
+class PackageInfo;
+class ScriptInfo;
 
 /**
  * Map of info objects.  Just a wrapper around std::map to improve code
@@ -110,14 +109,14 @@ public:
 	 * Signal that a record or enum type is now being parsed.
 	 * @param id The record or enum type identifier.
 	 */
-	void StartType(ID* id);
+	void StartType(IntrusivePtr<ID> id);
 
 	/**
 	 * Register a script-level identifier for which information/documentation
 	 * will be gathered.
 	 * @param id The script-level identifier.
 	 */
-	void Identifier(ID* id);
+	void Identifier(IntrusivePtr<ID> id);
 
 	/**
 	 * Register a record-field for which information/documentation will be
@@ -215,7 +214,7 @@ private:
 	typedef std::vector<std::string> comment_buffer_t;
 	typedef std::map<std::string, comment_buffer_t> comment_buffer_map_t;
 
-	IdentifierInfo* CreateIdentifierInfo(ID* id, ScriptInfo* script);
+	IdentifierInfo* CreateIdentifierInfo(IntrusivePtr<ID> id, ScriptInfo* script);
 
 	bool disabled;
 	comment_buffer_t comment_buffer; // For whatever next identifier comes in.

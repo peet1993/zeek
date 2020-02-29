@@ -1,5 +1,11 @@
 #include "Data.h"
 #include "File.h"
+#include "Desc.h"
+#include "IntrusivePtr.h"
+#include "RE.h"
+#include "Var.h" // for internal_type()
+#include "Scope.h"
+#include "module_util.h"
 #include "3rdparty/doctest.h"
 #include "broker/data.bif.h"
 
@@ -246,14 +252,14 @@ struct val_converter {
 				if ( ! index_val )
 					return nullptr;
 
-				list_val->Append(index_val.detach());
+				list_val->Append(index_val.release());
 				}
 
 
 			rval->Assign(list_val.get(), nullptr);
 			}
 
-		return rval.detach();
+		return rval.release();
 		}
 
 	result_type operator()(broker::table& a)
@@ -306,7 +312,7 @@ struct val_converter {
 				if ( ! index_val )
 					return nullptr;
 
-				list_val->Append(index_val.detach());
+				list_val->Append(index_val.release());
 				}
 
 			auto value_val = bro_broker::data_to_val(move(item.second),
@@ -315,10 +321,10 @@ struct val_converter {
 			if ( ! value_val )
 				return nullptr;
 
-			rval->Assign(list_val.get(), value_val.detach());
+			rval->Assign(list_val.get(), value_val.release());
 			}
 
-		return rval.detach();
+		return rval.release();
 		}
 
 	result_type operator()(broker::vector& a)
@@ -335,10 +341,10 @@ struct val_converter {
 				if ( ! item_val )
 					return nullptr;
 
-				rval->Assign(rval->Size(), item_val.detach());
+				rval->Assign(rval->Size(), item_val.release());
 				}
 
-			return rval.detach();
+			return rval.release();
 			}
 		else if ( type->Tag() == TYPE_FUNC )
 			{
@@ -404,11 +410,11 @@ struct val_converter {
 				if ( ! item_val )
 					return nullptr;
 
-				rval->Assign(i, item_val.detach());
+				rval->Assign(i, item_val.release());
 				++idx;
 				}
 
-			return rval.detach();
+			return rval.release();
 			}
 		else if ( type->Tag() == TYPE_PATTERN )
 			{
@@ -436,7 +442,7 @@ struct val_converter {
 			return rval;
 			}
 		else if ( type->Tag() == TYPE_OPAQUE )
-			return OpaqueVal::Unserialize(a);
+			return OpaqueVal::Unserialize(a).release();
 
 		return nullptr;
 		}
@@ -766,9 +772,7 @@ struct type_checker {
 			// TODO: Could avoid doing the full unserialization here
 			// and just check if the type is a correct match.
 			auto ov = OpaqueVal::Unserialize(a);
-			auto rval = ov != nullptr;
-			Unref(ov);
-			return rval;
+			return ov != nullptr;
 			}
 
 		return false;
@@ -786,12 +790,12 @@ static bool data_type_check(const broker::data& d, BroType* t)
 IntrusivePtr<Val> bro_broker::data_to_val(broker::data d, BroType* type)
 	{
 	if ( type->Tag() == TYPE_ANY )
-		return {bro_broker::make_data_val(move(d)), false};
+		return {AdoptRef{}, bro_broker::make_data_val(move(d))};
 
-	return {caf::visit(val_converter{type}, std::move(d)), false};
+	return {AdoptRef{}, caf::visit(val_converter{type}, std::move(d))};
 	}
 
-broker::expected<broker::data> bro_broker::val_to_data(Val* v)
+broker::expected<broker::data> bro_broker::val_to_data(const Val* v)
 	{
 	switch ( v->Type()->Tag() ) {
 	case TYPE_BOOL:
@@ -856,7 +860,7 @@ broker::expected<broker::data> bro_broker::val_to_data(Val* v)
 		return {string(v->AsFile()->Name())};
 	case TYPE_FUNC:
 		{
-		Func* f = v->AsFunc();
+		const Func* f = v->AsFunc();
 		std::string name(f->Name());
 
 		broker::vector rval;
@@ -865,7 +869,7 @@ broker::expected<broker::data> bro_broker::val_to_data(Val* v)
 		if ( name.find("lambda_<") == 0 )
 			{
 			// Only BroFuncs have closures.
-			if ( auto b = dynamic_cast<BroFunc*>(f) )
+			if ( auto b = dynamic_cast<const BroFunc*>(f) )
 				{
 				auto bc = b->SerializeClosure();
 				if ( ! bc )
@@ -1006,7 +1010,7 @@ broker::expected<broker::data> bro_broker::val_to_data(Val* v)
 		}
 	case TYPE_PATTERN:
 		{
-		RE_Matcher* p = v->AsPattern();
+		const RE_Matcher* p = v->AsPattern();
 		broker::vector rval = {p->PatternText(), p->AnywherePatternText()};
 		return {std::move(rval)};
 		}
@@ -1145,7 +1149,16 @@ broker::data& bro_broker::opaque_field_to_data(RecordVal* v, Frame* f)
 		reporter->RuntimeError(f->GetCall()->GetLocationInfo(),
 		                       "Broker::Data's opaque field is not set");
 
+	// RuntimeError throws an exception which causes this line to never exceute.
+	// NOLINTNEXTLINE(clang-analyzer-core.uninitialized.UndefReturn)
 	return static_cast<DataVal*>(d)->data;
+	}
+
+void bro_broker::DataVal::ValDescribe(ODesc* d) const
+	{
+	d->Add("broker::data{");
+	d->Add(broker::to_string(data));
+	d->Add("}");
 	}
 
 bool bro_broker::DataVal::canCastTo(BroType* t) const
@@ -1156,6 +1169,14 @@ bool bro_broker::DataVal::canCastTo(BroType* t) const
 IntrusivePtr<Val> bro_broker::DataVal::castTo(BroType* t)
 	{
 	return data_to_val(data, t);
+	}
+
+BroType* bro_broker::DataVal::ScriptDataType()
+	{
+	if ( ! script_data_type )
+		script_data_type = internal_type("Broker::Data");
+
+	return script_data_type;
 	}
 
 IMPLEMENT_OPAQUE_VALUE(bro_broker::DataVal)

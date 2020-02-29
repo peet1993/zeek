@@ -2,21 +2,27 @@
 
 #pragma once
 
+#include <list>
 #include <string>
 #include <utility>
-#include <vector>
 
-#include "FileReassembler.h"
-#include "Conn.h"
-#include "Val.h"
-#include "Tag.h"
+#include "analyzer/Tag.h"
 #include "AnalyzerSet.h"
 #include "BroString.h"
+#include "BroList.h" // for val_list
 #include "WeirdState.h"
+
+using std::string;
+
+class Connection;
+class RecordType;
+class RecordVal;
+class EventHandlerPtr;
 
 namespace file_analysis {
 
 class FileReassembler;
+class Tag;
 
 /**
  * Wrapper class around \c fa_file record values from script layer.

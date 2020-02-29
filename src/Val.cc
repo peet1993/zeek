@@ -1,6 +1,7 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
 #include "zeek-config.h"
+#include "Val.h"
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -12,10 +13,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "Val.h"
+#include <cmath>
+
+#include "Attr.h"
+#include "BroString.h"
+#include "CompHash.h"
+#include "Dict.h"
 #include "Net.h"
 #include "File.h"
 #include "Func.h"
+#include "Desc.h"
+#include "IntrusivePtr.h"
+#include "ID.h"
 #include "RE.h"
 #include "Scope.h"
 #include "NetVar.h"
@@ -24,48 +33,30 @@
 #include "Conn.h"
 #include "Reporter.h"
 #include "IPAddr.h"
+#include "Var.h" // for internal_type()
 
 #include "broker/Data.h"
 
-#include "3rdparty/json.hpp"
-#include "3rdparty/tsl-ordered-map/ordered_map.h"
-
-
-// Define a class for use with the json library that orders the keys in the same order that
-// they were inserted. By default, the json library orders them alphabetically and we don't
-// want it like that.
-template<class Key, class T, class Ignore, class Allocator,
-         class Hash = std::hash<Key>, class KeyEqual = std::equal_to<Key>,
-         class AllocatorPair = typename std::allocator_traits<Allocator>::template rebind_alloc<std::pair<Key, T>>,
-         class ValueTypeContainer = std::vector<std::pair<Key, T>, AllocatorPair>>
-using ordered_map = tsl::ordered_map<Key, T, Hash, KeyEqual, AllocatorPair, ValueTypeContainer>;
-
-using ZeekJson = nlohmann::basic_json<ordered_map>;
+#include "threading/formatters/JSON.h"
 
 Val::Val(Func* f)
+	: val(f), type(f->FType()->Ref())
 	{
-	val.func_val = f;
 	::Ref(val.func_val);
-	type = f->FType()->Ref();
-#ifdef DEBUG
-	bound_id = 0;
-#endif
 	}
 
-Val::Val(BroFile* f)
+static FileType* GetStringFileType() noexcept
 	{
 	static FileType* string_file_type = 0;
 	if ( ! string_file_type )
 		string_file_type = new FileType(base_type(TYPE_STRING));
+	return string_file_type;
+	}
 
-	val.file_val = f;
-
+Val::Val(BroFile* f)
+	: val(f), type(GetStringFileType()->Ref())
+	{
 	assert(f->FType()->Tag() == TYPE_STRING);
-	type = string_file_type->Ref();
-
-#ifdef DEBUG
-	bound_id = 0;
-#endif
 	}
 
 Val::~Val()
@@ -371,6 +362,19 @@ void Val::ValDescribeReST(ODesc* d) const
 	}
 
 
+#ifdef DEBUG
+ID* Val::GetID() const
+	{
+	return bound_id ? global_scope()->Lookup(bound_id) : 0;
+	}
+
+void Val::SetID(ID* id)
+	{
+	delete [] bound_id;
+	bound_id = id ? copy_string(id->Name()) : 0;
+	}
+#endif
+
 bool Val::WouldOverflow(const BroType* from_type, const BroType* to_type, const Val* val)
 	{
 	if ( !to_type || !from_type )
@@ -433,46 +437,56 @@ TableVal* Val::GetRecordFields()
 	return rt->GetRecordFieldsVal(rv);
 	}
 
-// This is a static method in this file to avoid including json.hpp in Val.h since it's huge.
-static ZeekJson BuildJSON(Val* val, bool only_loggable=false, RE_Matcher* re=nullptr)
+// This is a static method in this file to avoid including rapidjson's headers in Val.h because they're huge.
+static void BuildJSON(threading::formatter::JSON::NullDoubleWriter& writer, Val* val, bool only_loggable=false, RE_Matcher* re=nullptr, const string& key="")
 	{
-	// If the value wasn't set, return a nullptr. This will get turned into a 'null' in the json output.
-	if ( ! val )
-		return nullptr;
+	if ( !key.empty() )
+		writer.Key(key);
 
-	ZeekJson j;
+	// If the value wasn't set, write a null into the stream and return.
+	if ( ! val )
+		{
+		writer.Null();
+		return;
+		}
+
+	rapidjson::Value j;
 	BroType* type = val->Type();
 	switch ( type->Tag() )
 		{
 		case TYPE_BOOL:
-			j = val->AsBool();
+			writer.Bool(val->AsBool());
 			break;
 
 		case TYPE_INT:
-			j = val->AsInt();
+			writer.Int64(val->AsInt());
 			break;
 
 		case TYPE_COUNT:
-			j = val->AsCount();
+			writer.Uint64(val->AsCount());
 			break;
 
 		case TYPE_COUNTER:
-			j = val->AsCounter();
+			writer.Uint64(val->AsCounter());
 			break;
 
 		case TYPE_TIME:
-			j = val->AsTime();
+			writer.Double(val->AsTime());
 			break;
 
 		case TYPE_DOUBLE:
-			j = val->AsDouble();
+			writer.Double(val->AsDouble());
 			break;
 
 		case TYPE_PORT:
 			{
 			auto* pval = val->AsPortVal();
-			j.emplace("port", pval->Port());
-			j.emplace("proto", pval->Protocol());
+			writer.StartObject();
+			writer.Key("port");
+			writer.Int64(pval->Port());
+			writer.Key("proto");
+			writer.String(pval->Protocol());
+			writer.EndObject();
 			break;
 			}
 
@@ -484,7 +498,7 @@ static ZeekJson BuildJSON(Val* val, bool only_loggable=false, RE_Matcher* re=nul
 			ODesc d;
 			d.SetStyle(RAW_STYLE);
 			val->Describe(&d);
-			j = string(reinterpret_cast<const char*>(d.Bytes()), d.Len());
+			writer.String(reinterpret_cast<const char*>(d.Bytes()), d.Len());
 			break;
 			}
 
@@ -496,7 +510,7 @@ static ZeekJson BuildJSON(Val* val, bool only_loggable=false, RE_Matcher* re=nul
 			ODesc d;
 			d.SetStyle(RAW_STYLE);
 			val->Describe(&d);
-			j = json_escape_utf8(string(reinterpret_cast<const char*>(d.Bytes()), d.Len()));
+			writer.String(json_escape_utf8(string(reinterpret_cast<const char*>(d.Bytes()), d.Len())));
 			break;
 			}
 
@@ -506,9 +520,9 @@ static ZeekJson BuildJSON(Val* val, bool only_loggable=false, RE_Matcher* re=nul
 			auto* tval = val->AsTableVal();
 
 			if ( tval->Type()->IsSet() )
-				j = ZeekJson::array();
+				writer.StartArray();
 			else
-				j = ZeekJson::object();
+				writer.StartObject();
 
 			HashKey* k;
 			TableEntryVal* entry;
@@ -524,102 +538,125 @@ static ZeekJson BuildJSON(Val* val, bool only_loggable=false, RE_Matcher* re=nul
 				else
 					entry_key = lv->Ref();
 
-				ZeekJson key_json = BuildJSON(entry_key, only_loggable, re);
-
 				if ( tval->Type()->IsSet() )
-					j.emplace_back(std::move(key_json));
+					BuildJSON(writer, entry_key, only_loggable, re);
 				else
 					{
-					Val* entry_value = entry->Value();
+					rapidjson::StringBuffer buffer;
+					threading::formatter::JSON::NullDoubleWriter key_writer(buffer);
+					BuildJSON(key_writer, entry_key, only_loggable, re);
+					string key_str = buffer.GetString();
 
-					string key_string;
-					if ( key_json.is_string() )
-						key_string = key_json;
-					else
-						key_string = key_json.dump();
+					if ( key_str.length() >= 2 &&
+					     key_str[0] == '"' &&
+					     key_str[key_str.length() - 1] == '"' )
+						// Strip quotes.
+						key_str = key_str.substr(1, key_str.length() - 2);
 
-					j.emplace(key_string, BuildJSON(entry_value, only_loggable, re));
+					BuildJSON(writer, entry->Value(), only_loggable, re, key_str);
 					}
 
 				Unref(entry_key);
 				Unref(lv);
 				}
 
+			if ( tval->Type()->IsSet() )
+				writer.EndArray();
+			else
+				writer.EndObject();
+
 			break;
 			}
 
 		case TYPE_RECORD:
 			{
-			j = ZeekJson::object();
+			writer.StartObject();
+
 			auto* rval = val->AsRecordVal();
 			auto rt = rval->Type()->AsRecordType();
 
 			for ( auto i = 0; i < rt->NumFields(); ++i )
 				{
-				auto field_name = rt->FieldName(i);
-				std::string key_string;
-
-				if ( re && re->MatchAnywhere(field_name) != 0 )
-					{
-					StringVal blank("");
-					StringVal fn_val(field_name);
-					auto key_val = fn_val.Substitute(re, &blank, 0)->AsStringVal();
-					key_string = key_val->ToStdString();
-					Unref(key_val);
-					}
-				else
-					key_string = field_name;
-
 				Val* value = rval->LookupWithDefault(i);
 
 				if ( value && ( ! only_loggable || rt->FieldHasAttr(i, ATTR_LOG) ) )
-					j.emplace(key_string, BuildJSON(value, only_loggable, re));
+					{
+					string key_str;
+					auto field_name = rt->FieldName(i);
+
+					if ( re && re->MatchAnywhere(field_name) != 0 )
+						{
+						auto blank = make_intrusive<StringVal>("");
+						auto fn_val = make_intrusive<StringVal>(field_name);
+						auto key_val = fn_val->Substitute(re, blank.get(), 0)->AsStringVal();
+						key_str = key_val->ToStdString();
+						Unref(key_val);
+						}
+					else
+						key_str = field_name;
+
+					BuildJSON(writer, value, only_loggable, re, key_str);
+					}
 
 				Unref(value);
 				}
 
+			writer.EndObject();
 			break;
 			}
 
 		case TYPE_LIST:
 			{
-			j = ZeekJson::array();
+			writer.StartArray();
+
 			auto* lval = val->AsListVal();
 			size_t size = lval->Length();
 			for (size_t i = 0; i < size; i++)
-				j.push_back(BuildJSON(lval->Index(i), only_loggable, re));
+				BuildJSON(writer, lval->Index(i), only_loggable, re);
 
+			writer.EndArray();
 			break;
 			}
 
 		case TYPE_VECTOR:
 			{
-			j = ZeekJson::array();
+			writer.StartArray();
+
 			auto* vval = val->AsVectorVal();
 			size_t size = vval->SizeVal()->AsCount();
 			for (size_t i = 0; i < size; i++)
-				j.push_back(BuildJSON(vval->Lookup(i), only_loggable, re));
+				BuildJSON(writer, vval->Lookup(i), only_loggable, re);
 
+			writer.EndArray();
 			break;
 			}
 
 		case TYPE_OPAQUE:
 			{
+			writer.StartObject();
+
+			writer.Key("opaque_type");
 			auto* oval = val->AsOpaqueVal();
-			j = { { "opaque_type", OpaqueMgr::mgr()->TypeID(oval) } };
+			writer.String(OpaqueMgr::mgr()->TypeID(oval));
+
+			writer.EndObject();
 			break;
 			}
 
-		default: break;
+		default:
+		  writer.Null();
+		  break;
 		}
-
-	return j;
 	}
 
 StringVal* Val::ToJSON(bool only_loggable, RE_Matcher* re)
 	{
-	ZeekJson j = BuildJSON(this, only_loggable, re);
-	return new StringVal(j.dump());
+	rapidjson::StringBuffer buffer;
+	threading::formatter::JSON::NullDoubleWriter writer(buffer);
+
+	BuildJSON(writer, this, only_loggable, re, "");
+
+	return new StringVal(buffer.GetString());
 	}
 
 IntervalVal::IntervalVal(double quantity, double units) :
@@ -680,7 +717,8 @@ void IntervalVal::ValDescribe(ODesc* d) const
 			if ( ! (v >= unit || v <= -unit) )
 				continue;
 
-			double num = static_cast<double>(static_cast<int64_t>(v / unit));
+			double num = v / unit;
+			num = num < 0 ? std::ceil(num) : std::floor(num);
 			v -= num * unit;
 			to_print = num;
 			}
@@ -697,16 +735,6 @@ void IntervalVal::ValDescribe(ODesc* d) const
 
 		did_one = true;
 		}
-	}
-
-PortVal* PortManager::Get(uint32_t port_num) const
-	{
-	return val_mgr->GetPort(port_num);
-	}
-
-PortVal* PortManager::Get(uint32_t port_num, TransportProto port_type) const
-	{
-	return val_mgr->GetPort(port_num, port_type);
 	}
 
 uint32_t PortVal::Mask(uint32_t port_num, TransportProto port_type)
@@ -740,26 +768,8 @@ uint32_t PortVal::Mask(uint32_t port_num, TransportProto port_type)
 	return port_num;
 	}
 
-PortVal::PortVal(uint32_t p, TransportProto port_type) : Val(TYPE_PORT)
+PortVal::PortVal(uint32_t p) : Val(bro_uint_t(p), TYPE_PORT)
 	{
-	auto port_num = PortVal::Mask(p, port_type);
-	val.uint_val = static_cast<bro_uint_t>(port_num);
-	}
-
-PortVal::PortVal(uint32_t p, bool unused) : Val(TYPE_PORT)
-	{
-	val.uint_val = static_cast<bro_uint_t>(p);
-	}
-
-PortVal::PortVal(uint32_t p) : Val(TYPE_PORT)
-	{
-	if ( p >= 65536 * NUM_PORT_SPACES )
-		{
-		InternalWarning("bad port number");
-		p = 0;
-		}
-
-	val.uint_val = static_cast<bro_uint_t>(p);
 	}
 
 uint32_t PortVal::Port() const
@@ -809,30 +819,25 @@ Val* PortVal::DoClone(CloneState* state)
 	return Ref();
 	}
 
-AddrVal::AddrVal(const char* text) : Val(TYPE_ADDR)
+AddrVal::AddrVal(const char* text) : Val(new IPAddr(text), TYPE_ADDR)
 	{
-	val.addr_val = new IPAddr(text);
 	}
 
-AddrVal::AddrVal(const std::string& text) : Val(TYPE_ADDR)
+AddrVal::AddrVal(const std::string& text) : AddrVal(text.c_str())
 	{
-	val.addr_val = new IPAddr(text);
 	}
 
-AddrVal::AddrVal(uint32_t addr) : Val(TYPE_ADDR)
+AddrVal::AddrVal(uint32_t addr) : Val(new IPAddr(IPv4, &addr, IPAddr::Network), TYPE_ADDR)
 	{
 	// ### perhaps do gethostbyaddr here?
-	val.addr_val = new IPAddr(IPv4, &addr, IPAddr::Network);
 	}
 
-AddrVal::AddrVal(const uint32_t addr[4]) : Val(TYPE_ADDR)
+AddrVal::AddrVal(const uint32_t addr[4]) : Val(new IPAddr(IPv6, addr, IPAddr::Network), TYPE_ADDR)
 	{
-	val.addr_val = new IPAddr(IPv6, addr, IPAddr::Network);
 	}
 
-AddrVal::AddrVal(const IPAddr& addr) : Val(TYPE_ADDR)
+AddrVal::AddrVal(const IPAddr& addr) : Val(new IPAddr(addr), TYPE_ADDR)
 	{
-	val.addr_val = new IPAddr(addr);
 	}
 
 AddrVal::~AddrVal()
@@ -859,39 +864,30 @@ Val* AddrVal::DoClone(CloneState* state)
 	return Ref();
 	}
 
-SubNetVal::SubNetVal(const char* text) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(const char* text) : Val(new IPPrefix(), TYPE_SUBNET)
 	{
-	val.subnet_val = new IPPrefix();
-
 	if ( ! IPPrefix::ConvertString(text, val.subnet_val) )
 		reporter->Error("Bad string in SubNetVal ctor: %s", text);
 	}
 
-SubNetVal::SubNetVal(const char* text, int width) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(const char* text, int width) : Val(new IPPrefix(text, width), TYPE_SUBNET)
 	{
-	val.subnet_val = new IPPrefix(text, width);
 	}
 
-SubNetVal::SubNetVal(uint32_t addr, int width) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(uint32_t addr, int width) : SubNetVal(IPAddr{IPv4, &addr, IPAddr::Network}, width)
 	{
-	IPAddr a(IPv4, &addr, IPAddr::Network);
-	val.subnet_val = new IPPrefix(a, width);
 	}
 
-SubNetVal::SubNetVal(const uint32_t* addr, int width) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(const uint32_t* addr, int width) : SubNetVal(IPAddr{IPv6, addr, IPAddr::Network}, width)
 	{
-	IPAddr a(IPv6, addr, IPAddr::Network);
-	val.subnet_val = new IPPrefix(a, width);
 	}
 
-SubNetVal::SubNetVal(const IPAddr& addr, int width) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(const IPAddr& addr, int width) : Val(new IPPrefix(addr, width), TYPE_SUBNET)
 	{
-	val.subnet_val = new IPPrefix(addr, width);
 	}
 
-SubNetVal::SubNetVal(const IPPrefix& prefix) : Val(TYPE_SUBNET)
+SubNetVal::SubNetVal(const IPPrefix& prefix) : Val(new IPPrefix(prefix), TYPE_SUBNET)
 	{
-	val.subnet_val = new IPPrefix(prefix);
 	}
 
 SubNetVal::~SubNetVal()
@@ -956,8 +952,7 @@ IPAddr SubNetVal::Mask() const
 
 bool SubNetVal::Contains(const IPAddr& addr) const
 	{
-	IPAddr a(addr);
-	return val.subnet_val->Contains(a);
+	return val.subnet_val->Contains(addr);
 	}
 
 Val* SubNetVal::DoClone(CloneState* state)
@@ -966,25 +961,42 @@ Val* SubNetVal::DoClone(CloneState* state)
 	return Ref();
 	}
 
-StringVal::StringVal(BroString* s) : Val(TYPE_STRING)
+StringVal::StringVal(BroString* s) : Val(s, TYPE_STRING)
 	{
-	val.string_val = s;
 	}
 
-StringVal::StringVal(int length, const char* s) : Val(TYPE_STRING)
+// The following adds a NUL at the end.
+StringVal::StringVal(int length, const char* s)
+	: StringVal(new BroString(reinterpret_cast<const u_char*>(s), length, 1))
 	{
-	// The following adds a NUL at the end.
-	val.string_val = new BroString((const u_char*)  s, length, 1);
 	}
 
-StringVal::StringVal(const char* s) : Val(TYPE_STRING)
+StringVal::StringVal(const char* s) : StringVal(new BroString(s))
 	{
-	val.string_val = new BroString(s);
 	}
 
-StringVal::StringVal(const string& s) : Val(TYPE_STRING)
+StringVal::StringVal(const string& s) : StringVal(s.length(), s.data())
 	{
-	val.string_val = new BroString(reinterpret_cast<const u_char*>(s.data()), s.length(), 1);
+	}
+
+Val* StringVal::SizeVal() const
+	{
+	return val_mgr->GetCount(val.string_val->Len());
+	}
+
+int StringVal::Len()
+	{
+	return AsString()->Len();
+	}
+
+const u_char* StringVal::Bytes()
+	{
+	return AsString()->Bytes();
+	}
+
+const char* StringVal::CheckString()
+	{
+	return AsString()->CheckString();
 	}
 
 string StringVal::ToStdString() const
@@ -1319,7 +1331,8 @@ void TableVal::Init(TableType* t)
 	else
 		subnets = 0;
 
-	table_hash = new CompositeHash(table_type->Indices());
+	table_hash = new CompositeHash(IntrusivePtr<TypeList>(NewRef{},
+	                               table_type->Indices()));
 	val.table_val = new PDict<TableEntryVal>;
 	val.table_val->SetDeleteFunc(table_entry_val_delete_func);
 	}
@@ -1337,6 +1350,7 @@ TableVal::~TableVal()
 	Unref(def_val);
 	Unref(expire_func);
 	Unref(expire_time);
+	Unref(change_func);
 	}
 
 void TableVal::RemoveAll()
@@ -1345,6 +1359,11 @@ void TableVal::RemoveAll()
 	delete AsTable();
 	val.table_val = new PDict<TableEntryVal>;
 	val.table_val->SetDeleteFunc(table_entry_val_delete_func);
+	}
+
+int TableVal::Size() const
+	{
+	return AsTable()->Length();
 	}
 
 int TableVal::RecursiveSize() const
@@ -1387,6 +1406,12 @@ void TableVal::SetAttrs(Attributes* a)
 		{
 		expire_func = ef->AttrExpr();
 		expire_func->Ref();
+		}
+	auto cf = attrs->FindAttr(ATTR_ON_CHANGE);
+	if ( cf )
+		{
+		change_func = cf->AttrExpr();
+		change_func->Ref();
 		}
 	}
 
@@ -1463,13 +1488,22 @@ int TableVal::Assign(Val* index, HashKey* k, Val* new_val)
 	if ( old_entry_val && attrs && attrs->FindAttr(ATTR_EXPIRE_CREATE) )
 		new_entry_val->SetExpireAccess(old_entry_val->ExpireAccessTime());
 
+	Modified();
+
+	if ( change_func )
+		{
+		Val* change_index = index ? index->Ref() : RecoverIndex(&k_copy);
+		Val* v = old_entry_val ? old_entry_val->Value() : new_val;
+		CallChangeFunc(change_index, v, old_entry_val ? ELEMENT_CHANGED : ELEMENT_NEW);
+		Unref(change_index);
+		}
+
 	if ( old_entry_val )
 		{
 		old_entry_val->Unref();
 		delete old_entry_val;
 		}
 
-	Modified();
 	return 1;
 	}
 
@@ -1645,20 +1679,19 @@ bool TableVal::IsSubsetOf(const TableVal* tv) const
 	return true;
 	}
 
-int TableVal::ExpandAndInit(Val* index, Val* new_val)
+int TableVal::ExpandAndInit(IntrusivePtr<Val> index, IntrusivePtr<Val> new_val)
 	{
 	BroType* index_type = index->Type();
 
 	if ( index_type->IsSet() )
 		{
-		Val* new_index = index->AsTableVal()->ConvertToList();
-		Unref(index);
-		return ExpandAndInit(new_index, new_val);
+		index = {AdoptRef{}, index->AsTableVal()->ConvertToList()};
+		return ExpandAndInit(std::move(index), std::move(new_val));
 		}
 
 	if ( index_type->Tag() != TYPE_LIST )
 		// Nothing to expand.
-		return CheckAndAssign(index, new_val);
+		return CheckAndAssign(index.get(), std::move(new_val));
 
 	ListVal* iv = index->AsListVal();
 	if ( iv->BaseTag() != TYPE_ANY )
@@ -1667,10 +1700,9 @@ int TableVal::ExpandAndInit(Val* index, Val* new_val)
 			reporter->InternalError("bad singleton list index");
 
 		for ( int i = 0; i < iv->Length(); ++i )
-			if ( ! ExpandAndInit(iv->Index(i), new_val ? new_val->Ref() : 0) )
+			if ( ! ExpandAndInit({NewRef{}, iv->Index(i)}, new_val) )
 				return 0;
 
-		Unref(new_val);
 		return 1;
 		}
 
@@ -1689,13 +1721,9 @@ int TableVal::ExpandAndInit(Val* index, Val* new_val)
 
 		if ( i >= vl->length() )
 			// Nothing to expand.
-			return CheckAndAssign(index, new_val);
+			return CheckAndAssign(index.get(), std::move(new_val));
 		else
-			{
-			int result = ExpandCompoundAndInit(vl, i, new_val);
-			Unref(new_val);
-			return result;
-			}
+			return ExpandCompoundAndInit(vl, i, std::move(new_val));
 		}
 	}
 
@@ -1717,14 +1745,14 @@ Val* TableVal::Default(Val* index)
 		     record_promotion_compatible(dtype->AsRecordType(),
 						 ytype->AsRecordType()) )
 			{
-			Expr* coerce = new RecordCoerceExpr(def_attr->AttrExpr()->Ref(),
-			                                    ytype->AsRecordType());
-			def_val = coerce->Eval(0);
-			Unref(coerce);
+			auto coerce = make_intrusive<RecordCoerceExpr>(
+			        IntrusivePtr{NewRef{}, def_attr->AttrExpr()},
+			        IntrusivePtr{NewRef{}, ytype->AsRecordType()});
+			def_val = coerce->Eval(0).release();
 			}
 
 		else
-			def_val = def_attr->AttrExpr()->Eval(0);
+			def_val = def_attr->AttrExpr()->Eval(0).release();
 		}
 
 	if ( ! def_val )
@@ -1920,6 +1948,64 @@ ListVal* TableVal::RecoverIndex(const HashKey* k) const
 	return table_hash->RecoverVals(k);
 	}
 
+void TableVal::CallChangeFunc(const Val* index, Val* old_value, OnChangeType tpe)
+	{
+	if ( ! change_func || ! index || in_change_func )
+		return;
+
+	if ( ! table_type->IsSet() && ! old_value )
+		return;
+
+	try
+		{
+		auto thefunc = change_func->Eval(nullptr);
+
+		if ( ! thefunc )
+			{
+			return;
+			}
+
+		if ( thefunc->Type()->Tag() != TYPE_FUNC )
+			{
+			thefunc->Error("not a function");
+			return;
+			}
+
+		const Func* f = thefunc->AsFunc();
+		val_list vl { Ref() };
+		EnumVal* type = nullptr;
+		switch ( tpe )
+			{
+			case ELEMENT_NEW:
+				type = BifType::Enum::TableChange->GetVal(BifEnum::TableChange::TABLE_ELEMENT_NEW);
+				break;
+			case ELEMENT_CHANGED:
+				type = BifType::Enum::TableChange->GetVal(BifEnum::TableChange::TABLE_ELEMENT_CHANGED);
+				break;
+			case ELEMENT_REMOVED:
+				type = BifType::Enum::TableChange->GetVal(BifEnum::TableChange::TABLE_ELEMENT_REMOVED);
+				break;
+			case ELEMENT_EXPIRED:
+				type = BifType::Enum::TableChange->GetVal(BifEnum::TableChange::TABLE_ELEMENT_EXPIRED);
+			}
+		vl.append(type);
+
+		for ( const auto& v : *index->AsListVal()->Vals() )
+			vl.append(v->Ref());
+
+		if ( ! table_type->IsSet() )
+			vl.append(old_value->Ref());
+
+		in_change_func = true;
+		f->Call(&vl);
+		}
+	catch ( InterpreterException& e )
+		{
+		}
+
+	in_change_func = false;
+	}
+
 Val* TableVal::Delete(const Val* index)
 	{
 	HashKey* k = ComputeHash(index);
@@ -1933,6 +2019,10 @@ Val* TableVal::Delete(const Val* index)
 	delete v;
 
 	Modified();
+
+	if ( change_func )
+		CallChangeFunc(index, va, ELEMENT_REMOVED);
+
 	return va;
 	}
 
@@ -1952,6 +2042,14 @@ Val* TableVal::Delete(const HashKey* k)
 	delete v;
 
 	Modified();
+
+	if ( change_func && va )
+		{
+		auto index = table_hash->RecoverVals(k);
+		CallChangeFunc(index, va->Ref(), ELEMENT_REMOVED);
+		Unref(index);
+		}
+
 	return va;
 	}
 
@@ -1996,6 +2094,11 @@ ListVal* TableVal::ConvertToPureList() const
 		}
 
 	return ConvertToList((*tl)[0]->Tag());
+	}
+
+Attr* TableVal::FindAttr(attr_tag t) const
+	{
+	return attrs ? attrs->FindAttr(t) : 0;
 	}
 
 void TableVal::Describe(ODesc* d) const
@@ -2085,17 +2188,17 @@ void TableVal::Describe(ODesc* d) const
 		}
 	}
 
-int TableVal::ExpandCompoundAndInit(val_list* vl, int k, Val* new_val)
+int TableVal::ExpandCompoundAndInit(val_list* vl, int k, IntrusivePtr<Val> new_val)
 	{
 	Val* ind_k_v = (*vl)[k];
-	ListVal* ind_k = ind_k_v->Type()->IsSet() ?
-				ind_k_v->AsTableVal()->ConvertToList() :
-				ind_k_v->Ref()->AsListVal();
+	auto ind_k = ind_k_v->Type()->IsSet() ?
+	      IntrusivePtr<ListVal>{AdoptRef{}, ind_k_v->AsTableVal()->ConvertToList()} :
+	      IntrusivePtr<ListVal>{NewRef{}, ind_k_v->AsListVal()};
 
 	for ( int i = 0; i < ind_k->Length(); ++i )
 		{
 		Val* ind_k_i = ind_k->Index(i);
-		ListVal* expd = new ListVal(TYPE_ANY);
+		auto expd = make_intrusive<ListVal>(TYPE_ANY);
 		loop_over_list(*vl, j)
 			{
 			if ( j == k )
@@ -2104,21 +2207,16 @@ int TableVal::ExpandCompoundAndInit(val_list* vl, int k, Val* new_val)
 				expd->Append((*vl)[j]->Ref());
 			}
 
-		int success = ExpandAndInit(expd, new_val ? new_val->Ref() : 0);
-		Unref(expd);
+		int success = ExpandAndInit(std::move(expd), new_val);
 
 		if ( ! success )
-			{
-			Unref(ind_k);
 			return 0;
-			}
 		}
 
-	Unref(ind_k);
 	return 1;
 	}
 
-int TableVal::CheckAndAssign(Val* index, Val* new_val)
+int TableVal::CheckAndAssign(Val* index, IntrusivePtr<Val> new_val)
 	{
 	Val* v = 0;
 	if ( subnets )
@@ -2130,7 +2228,7 @@ int TableVal::CheckAndAssign(Val* index, Val* new_val)
 	if ( v )
 		index->Warn("multiple initializations for index");
 
-	return Assign(index, new_val);
+	return Assign(index, new_val.release());
 	}
 
 void TableVal::InitDefaultFunc(Frame* f)
@@ -2152,7 +2250,7 @@ void TableVal::InitDefaultFunc(Frame* f)
 					 ytype->AsRecordType()) )
 		return; // TableVal::Default will handle this.
 
-	def_val = def_attr->AttrExpr()->Eval(f);
+	def_val = def_attr->AttrExpr()->Eval(f).release();
 	}
 
 void TableVal::InitTimer(double delay)
@@ -2181,9 +2279,9 @@ void TableVal::DoExpire(double t)
 		tbl->MakeRobustCookie(expire_cookie);
 		}
 
-	HashKey* k = 0;
-	TableEntryVal* v = 0;
-	TableEntryVal* v_saved = 0;
+	HashKey* k = nullptr;
+	TableEntryVal* v = nullptr;
+	TableEntryVal* v_saved = nullptr;
 	bool modified = false;
 
 	for ( int i = 0; i < table_incremental_step &&
@@ -2200,10 +2298,11 @@ void TableVal::DoExpire(double t)
 
 		else if ( v->ExpireAccessTime() + timeout < t )
 			{
+			Val* idx = nullptr;
 			if ( expire_func )
 				{
-				Val* idx = RecoverIndex(k);
-				double secs = CallExpireFunc(idx);
+				idx = RecoverIndex(k);
+				double secs = CallExpireFunc(idx->Ref());
 
 				// It's possible that the user-provided
 				// function modified or deleted the table
@@ -2214,6 +2313,7 @@ void TableVal::DoExpire(double t)
 				if ( ! v )
 					{ // user-provided function deleted it
 					v = v_saved;
+					Unref(idx);
 					delete k;
 					continue;
 					}
@@ -2223,6 +2323,7 @@ void TableVal::DoExpire(double t)
 					// User doesn't want us to expire
 					// this now.
 					v->SetExpireAccess(network_time - timeout + secs);
+					Unref(idx);
 					delete k;
 					continue;
 					}
@@ -2231,13 +2332,20 @@ void TableVal::DoExpire(double t)
 
 			if ( subnets )
 				{
-				Val* index = RecoverIndex(k);
-				if ( ! subnets->Remove(index) )
+				if ( ! idx )
+					idx = RecoverIndex(k);
+				if ( ! subnets->Remove(idx) )
 					reporter->InternalWarning("index not in prefix table");
-				Unref(index);
 				}
 
 			tbl->RemoveEntry(k);
+			if ( change_func )
+				{
+				if ( ! idx )
+					idx = RecoverIndex(k);
+				CallChangeFunc(idx, v->Value(), ELEMENT_EXPIRED);
+				}
+			Unref(idx);
 			Unref(v->Value());
 			delete v;
 			modified = true;
@@ -2267,9 +2375,8 @@ double TableVal::GetExpireTime()
 
 	try
 		{
-		Val* timeout = expire_time->Eval(0);
+		auto timeout = expire_time->Eval(nullptr);
 		interval = (timeout ? timeout->AsInterval() : -1);
-		Unref(timeout);
 		}
 	catch ( InterpreterException& e )
 		{
@@ -2299,7 +2406,7 @@ double TableVal::CallExpireFunc(Val* idx)
 
 	try
 		{
-		Val* vf = expire_func->Eval(0);
+		auto vf = expire_func->Eval(nullptr);
 
 		if ( ! vf )
 			{
@@ -2311,7 +2418,6 @@ double TableVal::CallExpireFunc(Val* idx)
 		if ( vf->Type()->Tag() != TYPE_FUNC )
 			{
 			vf->Error("not a function");
-			Unref(vf);
 			Unref(idx);
 			return 0;
 			}
@@ -2359,8 +2465,6 @@ double TableVal::CallExpireFunc(Val* idx)
 			secs = result->AsInterval();
 			Unref(result);
 			}
-
-		Unref(vf);
 		}
 
 	catch ( InterpreterException& e )
@@ -2439,6 +2543,11 @@ unsigned int TableVal::MemoryAllocation() const
 		+ table_hash->MemoryAllocation();
 	}
 
+HashKey* TableVal::ComputeHash(const Val* index) const
+	{
+	return table_hash->ComputeHash(index, 1);
+	}
+
 vector<RecordVal*> RecordVal::parse_time_records;
 
 RecordVal::RecordVal(RecordType* t, bool init_fields) : Val(t)
@@ -2461,8 +2570,8 @@ RecordVal::RecordVal(RecordType* t, bool init_fields) : Val(t)
 	for ( int i = 0; i < n; ++i )
 		{
 		Attributes* a = t->FieldDecl(i)->attrs;
-		Attr* def_attr = a ? a->FindAttr(ATTR_DEFAULT) : 0;
-		Val* def = def_attr ? def_attr->AttrExpr()->Eval(0) : 0;
+		Attr* def_attr = a ? a->FindAttr(ATTR_DEFAULT) : nullptr;
+		auto def = def_attr ? def_attr->AttrExpr()->Eval(nullptr) : nullptr;
 		BroType* type = t->FieldDecl(i)->type;
 
 		if ( def && type->Tag() == TYPE_RECORD &&
@@ -2472,8 +2581,7 @@ RecordVal::RecordVal(RecordType* t, bool init_fields) : Val(t)
 			Val* tmp = def->AsRecordVal()->CoerceTo(type->AsRecordType());
 			if ( tmp )
 				{
-				Unref(def);
-				def = tmp;
+				def = {AdoptRef{}, tmp};
 				}
 			}
 
@@ -2482,18 +2590,16 @@ RecordVal::RecordVal(RecordType* t, bool init_fields) : Val(t)
 			TypeTag tag = type->Tag();
 
 			if ( tag == TYPE_RECORD )
-				def = new RecordVal(type->AsRecordType());
+				def = make_intrusive<RecordVal>(type->AsRecordType());
 
 			else if ( tag == TYPE_TABLE )
-				def = new TableVal(type->AsTableType(), a);
+				def = make_intrusive<TableVal>(type->AsTableType(), a);
 
 			else if ( tag == TYPE_VECTOR )
-				def = new VectorVal(type->AsVectorType());
+				def = make_intrusive<VectorVal>(type->AsVectorType());
 			}
 
-		vl->push_back(def ? def->Ref() : 0);
-
-		Unref(def);
+		vl->push_back(def.release());
 		}
 	}
 
@@ -2594,12 +2700,13 @@ RecordVal* RecordVal::CoerceTo(const RecordType* t, Val* aggr, bool allow_orphan
 			// Check for allowable optional fields is outside the loop, below.
 			continue;
 
-		if ( ar_t->FieldType(t_i)->Tag() == TYPE_RECORD
-				&& ! same_type(ar_t->FieldType(t_i), v->Type()) )
+		if ( ar_t->FieldType(t_i)->Tag() == TYPE_RECORD &&
+		     ! same_type(ar_t->FieldType(t_i), v->Type()) )
 			{
-			Expr* rhs = new ConstExpr(v->Ref());
-			Expr* e = new RecordCoerceExpr(rhs, ar_t->FieldType(t_i)->AsRecordType());
-			ar->Assign(t_i, e->Eval(0));
+			auto rhs = make_intrusive<ConstExpr>(IntrusivePtr{NewRef{}, v});
+			auto e = make_intrusive<RecordCoerceExpr>(std::move(rhs),
+			        IntrusivePtr{NewRef{}, ar_t->FieldType(t_i)->AsRecordType()});
+			ar->Assign(t_i, e->Eval(nullptr).release());
 			continue;
 			}
 
@@ -2928,10 +3035,12 @@ void VectorVal::ValDescribe(ODesc* d) const
 	d->Add("]");
 	}
 
-Val* check_and_promote(Val* v, const BroType* t, int is_init, const Location* expr_location)
+IntrusivePtr<Val> check_and_promote(IntrusivePtr<Val> v, const BroType* t,
+                                    int is_init,
+                                    const Location* expr_location)
 	{
 	if ( ! v )
-		return 0;
+		return nullptr;
 
 	BroType* vt = v->Type();
 
@@ -2952,20 +3061,18 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init, const Location* ex
 		if ( same_type(t, vt, is_init) )
 			return v;
 
-		t->Error("type clash", v, 0, expr_location);
-		Unref(v);
-		return 0;
+		t->Error("type clash", v.get(), 0, expr_location);
+		return nullptr;
 		}
 
 	if ( ! BothArithmetic(t_tag, v_tag) &&
 	     (! IsArithmetic(v_tag) || t_tag != TYPE_TIME || ! v->IsZero()) )
 		{
 		if ( t_tag == TYPE_LIST || v_tag == TYPE_LIST )
-			t->Error("list mixed with scalar", v, 0, expr_location);
+			t->Error("list mixed with scalar", v.get(), 0, expr_location);
 		else
-			t->Error("arithmetic mixed with non-arithmetic", v, 0, expr_location);
-		Unref(v);
-		return 0;
+			t->Error("arithmetic mixed with non-arithmetic", v.get(), 0, expr_location);
+		return nullptr;
 		}
 
 	if ( v_tag == t_tag )
@@ -2976,9 +3083,8 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init, const Location* ex
 		TypeTag mt = max_type(t_tag, v_tag);
 		if ( mt != t_tag )
 			{
-			t->Error("over-promotion of arithmetic value", v, 0, expr_location);
-			Unref(v);
-			return 0;
+			t->Error("over-promotion of arithmetic value", v.get(), 0, expr_location);
+			return nullptr;
 			}
 		}
 
@@ -2990,55 +3096,50 @@ Val* check_and_promote(Val* v, const BroType* t, int is_init, const Location* ex
 		// Already has the right internal type.
 		return v;
 
-	Val* promoted_v;
+	IntrusivePtr<Val> promoted_v;
+
 	switch ( it ) {
 	case TYPE_INTERNAL_INT:
-		if ( ( vit == TYPE_INTERNAL_UNSIGNED || vit == TYPE_INTERNAL_DOUBLE ) && Val::WouldOverflow(vt, t, v) )
+		if ( ( vit == TYPE_INTERNAL_UNSIGNED || vit == TYPE_INTERNAL_DOUBLE ) && Val::WouldOverflow(vt, t, v.get()) )
 			{
-			t->Error("overflow promoting from unsigned/double to signed arithmetic value", v, 0, expr_location);
-			Unref(v);
-			return 0;
+			t->Error("overflow promoting from unsigned/double to signed arithmetic value", v.get(), 0, expr_location);
+			return nullptr;
 			}
 		else if ( t_tag == TYPE_INT )
-			promoted_v = val_mgr->GetInt(v->CoerceToInt());
+			promoted_v = {AdoptRef{}, val_mgr->GetInt(v->CoerceToInt())};
 		else // enum
 			{
 			reporter->InternalError("bad internal type in check_and_promote()");
-			Unref(v);
-			return 0;
+			return nullptr;
 			}
 
 		break;
 
 	case TYPE_INTERNAL_UNSIGNED:
-		if ( ( vit == TYPE_INTERNAL_DOUBLE || vit == TYPE_INTERNAL_INT) && Val::WouldOverflow(vt, t, v) )
+		if ( ( vit == TYPE_INTERNAL_DOUBLE || vit == TYPE_INTERNAL_INT) && Val::WouldOverflow(vt, t, v.get()) )
 			{
-			t->Error("overflow promoting from signed/double to unsigned arithmetic value", v, 0, expr_location);
-			Unref(v);
-			return 0;
+			t->Error("overflow promoting from signed/double to unsigned arithmetic value", v.get(), 0, expr_location);
+			return nullptr;
 			}
 		else if ( t_tag == TYPE_COUNT || t_tag == TYPE_COUNTER )
-			promoted_v = val_mgr->GetCount(v->CoerceToUnsigned());
+			promoted_v = {AdoptRef{}, val_mgr->GetCount(v->CoerceToUnsigned())};
 		else // port
 			{
 			reporter->InternalError("bad internal type in check_and_promote()");
-			Unref(v);
-			return 0;
+			return nullptr;
 			}
 
 		break;
 
 	case TYPE_INTERNAL_DOUBLE:
-		promoted_v = new Val(v->CoerceToDouble(), t_tag);
+		promoted_v = make_intrusive<Val>(v->CoerceToDouble(), t_tag);
 		break;
 
 	default:
 		reporter->InternalError("bad internal type in check_and_promote()");
-		Unref(v);
-		return 0;
+		return nullptr;
 	}
 
-	Unref(v);
 	return promoted_v;
 	}
 
@@ -3109,30 +3210,30 @@ void delete_vals(val_list* vals)
 		}
 	}
 
-Val* cast_value_to_type(Val* v, BroType* t)
+IntrusivePtr<Val> cast_value_to_type(Val* v, BroType* t)
 	{
 	// Note: when changing this function, adapt all three of
 	// cast_value_to_type()/can_cast_value_to_type()/can_cast_value_to_type().
 
 	if ( ! v )
-		return 0;
+		return nullptr;
 
 	// Always allow casting to same type. This also covers casting 'any'
 	// to the actual type.
 	if ( same_type(v->Type(), t) )
-		return v->Ref();
+		return {NewRef{}, v};
 
 	if ( same_type(v->Type(), bro_broker::DataVal::ScriptDataType()) )
 		{
 		auto dv = v->AsRecordVal()->Lookup(0);
 
 		if ( ! dv )
-			return 0;
+			return nullptr;
 
-		return static_cast<bro_broker::DataVal *>(dv)->castTo(t).detach();
+		return static_cast<bro_broker::DataVal*>(dv)->castTo(t);
 		}
 
-	return 0;
+	return nullptr;
 	}
 
 bool can_cast_value_to_type(const Val* v, BroType* t)
@@ -3200,7 +3301,7 @@ ValManager::ValManager()
 		auto port_type = (TransportProto)i;
 
 		for ( auto j = 0u; j < arr.size(); ++j )
-			arr[j] = new PortVal(PortVal::Mask(j, port_type), true);
+			arr[j] = new PortVal(PortVal::Mask(j, port_type));
 		}
 	}
 

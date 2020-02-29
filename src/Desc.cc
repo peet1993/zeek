@@ -1,15 +1,15 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
 #include "zeek-config.h"
+#include "Desc.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <math.h>
 
-#include "Desc.h"
 #include "File.h"
 #include "Reporter.h"
-
 #include "ConvertUTF.h"
 
 #define DEFAULT_SIZE 128
@@ -164,7 +164,14 @@ void ODesc::Add(double d, bool no_exp)
 
 		Add(tmp);
 
-		if ( nearbyint(d) == d && isfinite(d) && ! strchr(tmp, 'e') )
+		auto approx_equal = [](double a, double b, double tolerance = 1e-6) -> bool
+			{
+			auto v = a - b;
+			return v < 0 ? -v < tolerance : v < tolerance;
+			};
+
+		if ( approx_equal(d, nearbyint(d), 1e-9) &&
+		     isfinite(d) && ! strchr(tmp, 'e') )
 			// disambiguate from integer
 			Add(".0");
 		}
@@ -376,10 +383,9 @@ void ODesc::AddBytesRaw(const void* bytes, unsigned int n)
 void ODesc::Grow(unsigned int n)
 	{
 	while ( offset + n + SLOP >= size )
-		{
 		size *= 2;
-		base = safe_realloc(base, size);
-		}
+
+	base = safe_realloc(base, size);
 	}
 
 void ODesc::Clear()

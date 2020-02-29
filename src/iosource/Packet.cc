@@ -1,9 +1,12 @@
 
 #include "Packet.h"
 #include "Sessions.h"
+#include "Desc.h"
+#include "IP.h"
 #include "iosource/Manager.h"
 
 extern "C" {
+#include <pcap.h>
 #ifdef HAVE_NET_ETHERNET_H
 #include <net/ethernet.h>
 #elif defined(HAVE_SYS_ETHERNET_H)
@@ -27,7 +30,7 @@ void Packet::Init(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_caplen,
 	ts = *arg_ts;
 	cap_len = arg_caplen;
 	len = arg_len;
-	tag = arg_tag;
+	tag = std::move(arg_tag);
 
 	copy = arg_copy;
 
@@ -61,8 +64,8 @@ void Packet::Init(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_caplen,
 	}
 
 void Packet::InitLLPOC(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_caplen,
-                  uint32_t arg_len, const u_char *arg_data, int arg_copy,
-                  std::string arg_tag)
+                       uint32_t arg_len, const u_char *arg_data, int arg_copy,
+                       std::string arg_tag)
 {
     if ( data && copy )
         delete [] data;
@@ -104,6 +107,11 @@ void Packet::InitLLPOC(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_capl
     // for llanalyzer
     cur_pos = data;
 }
+
+const IP_Hdr Packet::IP() const
+	{
+	return IP_Hdr((struct ip *) (data + hdr_size), false);
+	}
 
 void Packet::Weird(const char* name)
 	{
@@ -170,11 +178,11 @@ void Packet::ProcessLayer2()
 	// labels are in place.
 	bool have_mpls = false;
 
-    const u_char* pdata = data;
+	const u_char* pdata = data;
 	const u_char* end_of_data = data + cap_len;
 
 	switch ( link_type ) {
-    case DLT_NULL:
+	case DLT_NULL:
 		{
 		int protocol = (pdata[3] << 24) + (pdata[2] << 16) + (pdata[1] << 8) + pdata[0];
 		pdata += GetLinkHeaderSize(link_type);
@@ -202,7 +210,7 @@ void Packet::ProcessLayer2()
 
 	case DLT_EN10MB:
 		{
-        // Skip past Cisco FabricPath to encapsulated ethernet frame.
+		// Skip past Cisco FabricPath to encapsulated ethernet frame.
 		if ( pdata[12] == 0x89 && pdata[13] == 0x03 )
 			{
 			auto constexpr cfplen = 16;
@@ -216,7 +224,7 @@ void Packet::ProcessLayer2()
 			pdata += cfplen;
 			}
 
-        // Get protocol being carried from the ethernet frame.
+		// Get protocol being carried from the ethernet frame.
 		int protocol = (pdata[12] << 8) + pdata[13];
 
 		eth_type = protocol;
@@ -225,19 +233,19 @@ void Packet::ProcessLayer2()
 
 		pdata += GetLinkHeaderSize(link_type);
 
-        bool saw_vlan = false;
+		bool saw_vlan = false;
 
 		while ( protocol == 0x8100 || protocol == 0x9100 ||
 				protocol == 0x8864 )
 			{
-            switch ( protocol )
+			switch ( protocol )
 				{
 				// VLAN carried over the ethernet frame.
 				// 802.1q / 802.1ad
 				case 0x8100:
 				case 0x9100:
 					{
-                    if ( pdata + 4 >= end_of_data )
+					if ( pdata + 4 >= end_of_data )
 						{
 						Weird("truncated_link_header");
 						return;
@@ -255,7 +263,7 @@ void Packet::ProcessLayer2()
 				// PPPoE carried over the ethernet frame.
 				case 0x8864:
 					{
-                    if ( pdata + 8 >= end_of_data )
+					if ( pdata + 8 >= end_of_data )
 						{
 						Weird("truncated_link_header");
 						return;
@@ -264,18 +272,18 @@ void Packet::ProcessLayer2()
 					protocol = (pdata[6] << 8) + pdata[7];
 					pdata += 8; // Skip the PPPoE session and PPP header
 
-                    if ( protocol == 0x0021 )
-                        l3_proto = L3_IPV4;
+					if ( protocol == 0x0021 )
+						l3_proto = L3_IPV4;
 					else if ( protocol == 0x0057 )
 						l3_proto = L3_IPV6;
 					else
 						{
-                        // Neither IPv4 nor IPv6.
+						// Neither IPv4 nor IPv6.
 						Weird("non_ip_packet_in_pppoe_encapsulation");
 						return;
 						}
 					}
-                    break;
+					break;
 				}
 			}
 
@@ -286,7 +294,7 @@ void Packet::ProcessLayer2()
 		// Normal path to determine Layer 3 protocol.
 		if ( ! have_mpls && l3_proto == L3_UNKNOWN )
 			{
-            if ( protocol == 0x800 )
+			if ( protocol == 0x800 )
 				l3_proto = L3_IPV4;
 			else if ( protocol == 0x86dd )
 				l3_proto = L3_IPV6;
@@ -294,13 +302,13 @@ void Packet::ProcessLayer2()
 				l3_proto = L3_ARP;
 			else
 				{
-                // Neither IPv4 nor IPv6.
-                Weird("non_ip_packet_in_ethernet");
+				// Neither IPv4 nor IPv6.
+				Weird("non_ip_packet_in_ethernet");
 				return;
 				}
 			}
 
-        break;
+		break;
 		}
 
 	case DLT_PPP_SERIAL:

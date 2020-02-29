@@ -70,9 +70,6 @@ Manager::~Manager()
 	for ( analyzer_map_by_port::const_iterator i = analyzers_by_port_udp.begin(); i != analyzers_by_port_udp.end(); i++ )
 		delete i->second;
 
-	analyzers_by_port_udp.clear();
-	analyzers_by_port_tcp.clear();
-
 	// Clean up expected-connection table.
 	while ( conns_by_timeout.size() )
 		{
@@ -145,7 +142,7 @@ void Manager::Done()
 	{
 	}
 
-bool Manager::EnableAnalyzer(Tag tag)
+bool Manager::EnableAnalyzer(const Tag& tag)
 	{
 	Component* p = Lookup(tag);
 
@@ -171,7 +168,7 @@ bool Manager::EnableAnalyzer(EnumVal* val)
 	return true;
 	}
 
-bool Manager::DisableAnalyzer(Tag tag)
+bool Manager::DisableAnalyzer(const Tag& tag)
 	{
 	Component* p = Lookup(tag);
 
@@ -211,7 +208,7 @@ analyzer::Tag Manager::GetAnalyzerTag(const char* name)
 	return GetComponentTag(name);
 	}
 
-bool Manager::IsEnabled(Tag tag)
+bool Manager::IsEnabled(const Tag& tag)
 	{
 	if ( ! tag )
 		return false;
@@ -255,7 +252,7 @@ bool Manager::UnregisterAnalyzerForPort(EnumVal* val, PortVal* port)
 	return UnregisterAnalyzerForPort(p->Tag(), port->PortType(), port->Port());
 	}
 
-bool Manager::RegisterAnalyzerForPort(Tag tag, TransportProto proto, uint32_t port)
+bool Manager::RegisterAnalyzerForPort(const Tag& tag, TransportProto proto, uint32_t port)
 	{
 	tag_set* l = LookupPort(proto, port, true);
 
@@ -271,7 +268,7 @@ bool Manager::RegisterAnalyzerForPort(Tag tag, TransportProto proto, uint32_t po
 	return true;
 	}
 
-bool Manager::UnregisterAnalyzerForPort(Tag tag, TransportProto proto, uint32_t port)
+bool Manager::UnregisterAnalyzerForPort(const Tag& tag, TransportProto proto, uint32_t port)
 	{
 	tag_set* l = LookupPort(proto, port, true);
 
@@ -287,7 +284,7 @@ bool Manager::UnregisterAnalyzerForPort(Tag tag, TransportProto proto, uint32_t 
 	return true;
 	}
 
-Analyzer* Manager::InstantiateAnalyzer(Tag tag, Connection* conn)
+Analyzer* Manager::InstantiateAnalyzer(const Tag& tag, Connection* conn)
 	{
 	Component* c = Lookup(tag);
 
@@ -542,7 +539,7 @@ void Manager::ExpireScheduledAnalyzers()
 
 void Manager::ScheduleAnalyzer(const IPAddr& orig, const IPAddr& resp,
 			uint16_t resp_p,
-			TransportProto proto, Tag analyzer,
+			TransportProto proto, const Tag& analyzer,
 			double timeout)
 	{
 	if ( ! network_time )

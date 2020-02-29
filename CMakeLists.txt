@@ -79,11 +79,14 @@ execute_process(COMMAND grep "^#define  *BRO_PLUGIN_API_VERSION"
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
 string(REGEX REPLACE "^#define.*VERSION *" "" API_VERSION "${API_VERSION}")
 
-string(REPLACE "." " " version_numbers ${VERSION})
+string(REGEX REPLACE "[.-]" " " version_numbers ${VERSION})
 separate_arguments(version_numbers)
 list(GET version_numbers 0 VERSION_MAJOR)
 list(GET version_numbers 1 VERSION_MINOR)
+list(GET version_numbers 2 VERSION_PATCH)
 set(VERSION_MAJ_MIN "${VERSION_MAJOR}.${VERSION_MINOR}")
+math(EXPR ZEEK_VERSION_NUMBER
+     "${VERSION_MAJOR} * 10000 + ${VERSION_MINOR} * 100 + ${VERSION_PATCH}")
 
 set(VERSION_C_IDENT "${VERSION}_plugin_${API_VERSION}")
 string(REGEX REPLACE "-[0-9]*$" "_git" VERSION_C_IDENT "${VERSION_C_IDENT}")
@@ -130,13 +133,21 @@ if ( ZEEK_SANITIZERS )
     set(_sanitizer_flags "${_sanitizer_flags} -fno-omit-frame-pointer")
     set(_sanitizer_flags "${_sanitizer_flags} -fno-optimize-sibling-calls")
 
-    if ( NOT DEFINED ENV{NO_OPTIMIZATIONS} )
-      # Using -O1 is generally the suggestion to get more reasonable
-      # performance.  The one downside is it that the compiler may optimize out
-      # code that otherwise generates an error/leak in a -O0 build, but that
-      # should be rare and users mostly will not be running unoptimized builds
-      # in production anyway.
-      set(_sanitizer_flags "${_sanitizer_flags} -O1")
+    if ( NOT DEFINED ZEEK_SANITIZER_OPTIMIZATIONS )
+        if ( DEFINED ENV{NO_OPTIMIZATIONS} )
+            # Using -O1 is generally the suggestion to get more reasonable
+            # performance.  The one downside is it that the compiler may
+            # optimize out code that otherwise generates an error/leak in a -O0
+            # build, but that should be rare and users mostly will not be
+            # running unoptimized builds in production anyway.
+            set(ZEEK_SANITIZER_OPTIMIZATIONS false CACHE INTERNAL "" FORCE)
+        else ()
+            set(ZEEK_SANITIZER_OPTIMIZATIONS true CACHE INTERNAL "" FORCE)
+        endif ()
+    endif ()
+
+    if ( ZEEK_SANITIZER_OPTIMIZATIONS )
+        set(_sanitizer_flags "${_sanitizer_flags} -O1")
     endif ()
 
     # Technically, the we also need to use the compiler to drive linking and
@@ -170,8 +181,7 @@ FindRequiredPackage(OpenSSL)
 FindRequiredPackage(BIND)
 FindRequiredPackage(ZLIB)
 
-if (NOT BINPAC_EXE_PATH AND
-    EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/aux/binpac/CMakeLists.txt)
+if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/aux/binpac/CMakeLists.txt)
 
     set(ENABLE_STATIC_ONLY_SAVED ${ENABLE_STATIC_ONLY})
 
@@ -354,6 +364,7 @@ include(OpenSSLTests)
 include(CheckNameserCompat)
 include(GetArchitecture)
 include(RequireCXX17)
+include(FindKqueue)
 
 if ( (OPENSSL_VERSION VERSION_EQUAL "1.1.0") OR (OPENSSL_VERSION VERSION_GREATER "1.1.0") )
   set(ZEEK_HAVE_OPENSSL_1_1 true CACHE INTERNAL "" FORCE)
@@ -371,11 +382,8 @@ endif ()
 string(TOLOWER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_LOWER)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/zeek-config.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/zeek-config.h)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/bro-config.h.in
-               ${CMAKE_CURRENT_BINARY_DIR}/bro-config.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/zeek-config.h DESTINATION include/zeek)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/bro-config.h DESTINATION include/zeek)
 
 if ( CAF_ROOT_DIR )
   set(ZEEK_CONFIG_CAF_ROOT_DIR ${CAF_ROOT_DIR})

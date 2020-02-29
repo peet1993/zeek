@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "EventRegistry.h"
-
-#include "analyzer/Tag.h"
+#include "BroList.h"
 #include "analyzer/Analyzer.h"
+#include "iosource/IOSource.h"
+#include "Flare.h"
 
 class EventMgr;
 
@@ -51,7 +51,7 @@ protected:
 extern uint64_t num_events_queued;
 extern uint64_t num_events_dispatched;
 
-class EventMgr : public BroObj {
+class EventMgr : public BroObj, public iosource::IOSource {
 public:
 	EventMgr();
 	~EventMgr() override;
@@ -79,16 +79,7 @@ public:
 	// existence check.
 	void QueueEvent(const EventHandlerPtr &h, val_list vl,
 			SourceID src = SOURCE_LOCAL, analyzer::ID aid = 0,
-			TimerMgr* mgr = 0, BroObj* obj = 0)
-		{
-		if ( h )
-			QueueEvent(new Event(h, std::move(vl), src, aid, mgr, obj));
-		else
-			{
-			for ( const auto& v : vl )
-				Unref(v);
-			}
-		}
+			TimerMgr* mgr = 0, BroObj* obj = 0);
 
 	// Same as QueueEvent, except taking the event's argument list via a
 	// pointer instead of by value.  This function takes ownership of the
@@ -102,12 +93,7 @@ public:
 		delete vl;
 		}
 
-	void Dispatch(Event* event, bool no_remote = false)
-		{
-		current_src = event->Source();
-		event->Dispatch(no_remote);
-		Unref(event);
-		}
+	void Dispatch(Event* event, bool no_remote = false);
 
 	void Drain();
 	bool IsDraining() const	{ return draining; }
@@ -129,6 +115,11 @@ public:
 
 	void Describe(ODesc* d) const override;
 
+	double GetNextTimeout() override { return -1; }
+	void Process() override;
+	const char* Tag() override { return "EventManager"; }
+	void InitPostScript();
+
 protected:
 	void QueueEvent(Event* event);
 
@@ -139,6 +130,7 @@ protected:
 	TimerMgr* current_mgr;
 	RecordVal* src_val;
 	bool draining;
+	bro::Flare queue_flare;
 };
 
 extern EventMgr mgr;

@@ -1,13 +1,14 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include <algorithm>
+#include "zeek-config.h"
+#include "NFS.h"
+
+#include <utility>
 #include <vector>
 
-#include "zeek-config.h"
-
+#include "BroString.h"
 #include "NetVar.h"
 #include "XDR.h"
-#include "NFS.h"
 #include "Event.h"
 
 #include "events.bif.h"

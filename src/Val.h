@@ -2,24 +2,20 @@
 
 #pragma once
 
+#include "Type.h"
+#include "Timer.h"
+#include "Notifier.h"
+#include "net_util.h"
+
 #include <vector>
 #include <list>
 #include <array>
 #include <unordered_map>
 
-#include "net_util.h"
-#include "Type.h"
-#include "Dict.h"
-#include "CompHash.h"
-#include "BroString.h"
-#include "Attr.h"
-#include "Timer.h"
-#include "ID.h"
-#include "Scope.h"
-#include "Notifier.h"
-#include "IPAddr.h"
-#include "DebugLogger.h"
-#include "RE.h"
+#include <sys/types.h> // for u_char
+
+using std::vector;
+using std::string;
 
 // We have four different port name spaces: TCP, UDP, ICMP, and UNKNOWN.
 // We distinguish between them based on the bits specified in the *_PORT_MASK
@@ -31,7 +27,13 @@
 #define UDP_PORT_MASK	0x20000
 #define ICMP_PORT_MASK	0x30000
 
+template <class T> class IntrusivePtr;
+template<typename T> class PDict;
+template <class T> class IntrusivePtr;
+class IterCookie;
+
 class Val;
+class BroString;
 class BroFunc;
 class Func;
 class BroFile;
@@ -50,13 +52,18 @@ class StringVal;
 class EnumVal;
 class OpaqueVal;
 
+class IPAddr;
+class IPPrefix;
+
 class StateAccess;
 
 class VectorVal;
 
 class TableEntryVal;
 
-typedef union {
+class RE_Matcher;
+
+union BroValUnion {
 	// Used for bool, int, enum.
 	bro_int_t int_val;
 
@@ -81,67 +88,50 @@ typedef union {
 
 	vector<Val*>* vector_val;
 
-} BroValUnion;
+	BroValUnion() = default;
+
+	constexpr BroValUnion(bro_int_t value) noexcept
+		: int_val(value) {}
+
+	constexpr BroValUnion(bro_uint_t value) noexcept
+		: uint_val(value) {}
+
+	constexpr BroValUnion(IPAddr* value) noexcept
+		: addr_val(value) {}
+
+	constexpr BroValUnion(IPPrefix* value) noexcept
+		: subnet_val(value) {}
+
+	constexpr BroValUnion(double value) noexcept
+		: double_val(value) {}
+
+	constexpr BroValUnion(BroString* value) noexcept
+		: string_val(value) {}
+
+	constexpr BroValUnion(Func* value) noexcept
+		: func_val(value) {}
+
+	constexpr BroValUnion(BroFile* value) noexcept
+		: file_val(value) {}
+
+	constexpr BroValUnion(RE_Matcher* value) noexcept
+		: re_val(value) {}
+
+	constexpr BroValUnion(PDict<TableEntryVal>* value) noexcept
+		: table_val(value) {}
+
+	constexpr BroValUnion(val_list* value) noexcept
+		: val_list_val(value) {}
+
+	constexpr BroValUnion(vector<Val*> *value) noexcept
+		: vector_val(value) {}
+};
 
 class Val : public BroObj {
 public:
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetBool, GetFalse/GetTrue, GetInt, or GetCount instead")
-	Val(bool b, TypeTag t)
-		{
-		val.int_val = b;
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
-		}
-
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetBool, GetFalse/GetTrue, GetInt, or GetCount instead")
-	Val(int32_t i, TypeTag t)
-		{
-		val.int_val = bro_int_t(i);
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
-		}
-
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetBool, GetFalse/GetTrue, GetInt, or GetCount instead")
-	Val(uint32_t u, TypeTag t)
-		{
-		val.uint_val = bro_uint_t(u);
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
-		}
-
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetBool, GetFalse/GetTrue, GetInt, or GetCount instead")
-	Val(int64_t i, TypeTag t)
-		{
-		val.int_val = i;
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
-		}
-
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetBool, GetFalse/GetTrue, GetInt, or GetCount instead")
-	Val(uint64_t u, TypeTag t)
-		{
-		val.uint_val = u;
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
-		}
-
 	Val(double d, TypeTag t)
+		: val(d), type(base_type(t))
 		{
-		val.double_val = d;
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
 		}
 
 	explicit Val(Func* f);
@@ -150,21 +140,15 @@ public:
 	// class has ref'd it.
 	explicit Val(BroFile* f);
 
-	Val(BroType* t, bool type_type) // Extra arg to differentiate from protected version.
+	// Extra arg to differentiate from protected version.
+	Val(BroType* t, bool type_type)
+		: type(new TypeType(t->Ref()))
 		{
-		type = new TypeType(t->Ref());
-#ifdef DEBUG
-		bound_id = 0;
-#endif
 		}
 
 	Val()
+		: val(bro_int_t(0)), type(base_type(TYPE_ERROR))
 		{
-		val.int_val = 0;
-		type = base_type(TYPE_ERROR);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
 		}
 
 	~Val() override;
@@ -332,16 +316,9 @@ public:
 #ifdef DEBUG
 	// For debugging, we keep a reference to the global ID to which a
 	// value has been bound *last*.
-	ID* GetID() const
-		{
-		return bound_id ? global_scope()->Lookup(bound_id) : 0;
-		}
+	ID* GetID() const;
 
-	void SetID(ID* id)
-		{
-		delete [] bound_id;
-		bound_id = id ? copy_string(id->Name()) : 0;
-		}
+	void SetID(ID* id);
 #endif
 
 	static bool WouldOverflow(const BroType* from_type, const BroType* to_type, const Val* val);
@@ -364,39 +341,34 @@ protected:
 
 	static Val* MakeBool(bool b)
 		{
-		auto rval = new Val(TYPE_BOOL);
-		rval->val.int_val = b;
-		return rval;
+		return new Val(bro_int_t(b), TYPE_BOOL);
 		}
 
 	static Val* MakeInt(bro_int_t i)
 		{
-		auto rval = new Val(TYPE_INT);
-		rval->val.int_val = i;
-		return rval;
+		return new Val(i, TYPE_INT);
 		}
 
 	static Val* MakeCount(bro_uint_t u)
 		{
-		auto rval = new Val(TYPE_COUNT);
-		rval->val.uint_val = u;
-		return rval;
+		return new Val(u, TYPE_COUNT);
 		}
 
-	explicit Val(TypeTag t)
+	template<typename V>
+	Val(V &&v, TypeTag t) noexcept
+		: val(std::forward<V>(v)), type(base_type(t))
 		{
-		type = base_type(t);
-#ifdef DEBUG
-		bound_id = 0;
-#endif
+		}
+
+	template<typename V>
+	Val(V &&v, BroType* t) noexcept
+		: val(std::forward<V>(v)), type(t->Ref())
+		{
 		}
 
 	explicit Val(BroType* t)
+		: type(t->Ref())
 		{
-		type = t->Ref();
-#ifdef DEBUG
-		bound_id = 0;
-#endif
 		}
 
 	ACCESSOR(TYPE_TABLE, PDict<TableEntryVal>*, table_val, AsNonConstTable)
@@ -424,27 +396,10 @@ protected:
 
 #ifdef DEBUG
 	// For debugging, we keep the name of the ID to which a Val is bound.
-	const char* bound_id;
+	const char* bound_id = nullptr;
 #endif
 
 };
-
-class PortManager {
-public:
-	// Port number given in host order.
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetPort() instead")
-	PortVal* Get(uint32_t port_num, TransportProto port_type) const;
-
-	// Host-order port number already masked with port space protocol mask.
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetPort() instead")
-	PortVal* Get(uint32_t port_num) const;
-
-	// Returns a masked port number
-	ZEEK_DEPRECATED("Remove in v3.1: use PortVal::Mask() instead")
-	uint32_t Mask(uint32_t port_num, TransportProto port_type) const;
-};
-
-extern PortManager* port_mgr;
 
 // Holds pre-allocated Val objects for those where it's more optimal to
 // re-use existing ones rather than allocate anew.
@@ -521,14 +476,6 @@ protected:
 
 class PortVal : public Val {
 public:
-	// Port number given in host order.
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetPort() instead")
-	PortVal(uint32_t p, TransportProto port_type);
-
-	// Host-order port number already masked with port space protocol mask.
-	ZEEK_DEPRECATED("Remove in v3.1: use val_mgr->GetPort() instead")
-	explicit PortVal(uint32_t p);
-
 	Val* SizeVal() const override	{ return val_mgr->GetInt(val.uint_val); }
 
 	// Returns the port number in host order (not including the mask).
@@ -556,10 +503,8 @@ public:
 	static uint32_t Mask(uint32_t port_num, TransportProto port_type);
 
 protected:
-	friend class Val;
 	friend class ValManager;
-	PortVal()	{}
-	PortVal(uint32_t p, bool unused);
+	PortVal(uint32_t p);
 
 	void ValDescribe(ODesc* d) const override;
 	Val* DoClone(CloneState* state) override;
@@ -581,11 +526,6 @@ public:
 	unsigned int MemoryAllocation() const override;
 
 protected:
-	friend class Val;
-	AddrVal()	{}
-	explicit AddrVal(TypeTag t) : Val(t)	{ }
-	explicit AddrVal(BroType* t) : Val(t)	{ }
-
 	Val* DoClone(CloneState* state) override;
 };
 
@@ -610,9 +550,6 @@ public:
 	unsigned int MemoryAllocation() const override;
 
 protected:
-	friend class Val;
-	SubNetVal()	{}
-
 	void ValDescribe(ODesc* d) const override;
 	Val* DoClone(CloneState* state) override;
 };
@@ -624,12 +561,11 @@ public:
 	explicit StringVal(const string& s);
 	StringVal(int length, const char* s);
 
-	Val* SizeVal() const override
-		{ return val_mgr->GetCount(val.string_val->Len()); }
+	Val* SizeVal() const override;
 
-	int Len()		{ return AsString()->Len(); }
-	const u_char* Bytes()	{ return AsString()->Bytes(); }
-	const char* CheckString() { return AsString()->CheckString(); }
+	int Len();
+	const u_char* Bytes();
+	const char* CheckString();
 
 	// Note that one needs to de-allocate the return value of
 	// ExpandedString() to avoid a memory leak.
@@ -644,9 +580,6 @@ public:
 	Val* Substitute(RE_Matcher* re, StringVal* repl, bool do_all);
 
 protected:
-	friend class Val;
-	StringVal()	{}
-
 	void ValDescribe(ODesc* d) const override;
 	Val* DoClone(CloneState* state) override;
 };
@@ -663,9 +596,6 @@ public:
 	unsigned int MemoryAllocation() const override;
 
 protected:
-	friend class Val;
-	PatternVal()	{}
-
 	void ValDescribe(ODesc* d) const override;
 	Val* DoClone(CloneState* state) override;
 };
@@ -708,9 +638,6 @@ public:
 	unsigned int MemoryAllocation() const override;
 
 protected:
-	friend class Val;
-	ListVal()	{}
-
 	Val* DoClone(CloneState* state) override;
 
 	val_list vals;
@@ -775,6 +702,7 @@ protected:
 };
 
 class CompositeHash;
+class HashKey;
 class Frame;
 
 class TableVal : public Val, public notifier::Modifiable {
@@ -828,7 +756,7 @@ public:
 
 	// Expands any lists in the index into multiple initializations.
 	// Returns true if the initializations typecheck, false if not.
-	int ExpandAndInit(Val* index, Val* new_val);
+	int ExpandAndInit(IntrusivePtr<Val> index, IntrusivePtr<Val> new_val);
 
 	// Returns the element's value if it exists in the table,
 	// nil otherwise.  Note, "index" is not const because we
@@ -861,12 +789,11 @@ public:
 	ListVal* ConvertToPureList() const;	// must be single index type
 
 	void SetAttrs(Attributes* attrs);
-	Attr* FindAttr(attr_tag t) const
-		{ return attrs ? attrs->FindAttr(t) : 0; }
+	Attr* FindAttr(attr_tag t) const;
 	Attributes* Attrs()	{ return attrs; }
 
 	// Returns the size of the table.
-	int Size() const	{ return AsTable()->Length(); }
+	int Size() const;
 	int RecursiveSize() const;
 
 	// Returns the Prefix table used inside the table (if present).
@@ -879,10 +806,10 @@ public:
 	void InitTimer(double delay);
 	void DoExpire(double t);
 
-        // If the &default attribute is not a function, or the functon has
-        // already been initialized, this does nothing. Otherwise, evaluates
-        // the function in the frame allowing it to capture its closure.
-        void InitDefaultFunc(Frame* f);
+	// If the &default attribute is not a function, or the functon has
+	// already been initialized, this does nothing. Otherwise, evaluates
+	// the function in the frame allowing it to capture its closure.
+	void InitDefaultFunc(Frame* f);
 
 	unsigned int MemoryAllocation() const override;
 
@@ -892,20 +819,16 @@ public:
 			timer = 0;
 		}
 
-	HashKey* ComputeHash(const Val* index) const
-		{ return table_hash->ComputeHash(index, 1); }
+	HashKey* ComputeHash(const Val* index) const;
 
 	notifier::Modifiable* Modifiable() override	{ return this; }
 
 protected:
-	friend class Val;
-	TableVal()	{}
-
 	void Init(TableType* t);
 
 	void CheckExpireAttr(attr_tag at);
-	int ExpandCompoundAndInit(val_list* vl, int k, Val* new_val);
-	int CheckAndAssign(Val* index, Val* new_val);
+	int ExpandCompoundAndInit(val_list* vl, int k, IntrusivePtr<Val> new_val);
+	int CheckAndAssign(Val* index, IntrusivePtr<Val> new_val);
 
 	// Calculates default value for index.  Returns 0 if none.
 	Val* Default(Val* index);
@@ -922,6 +845,12 @@ protected:
 	// takes ownership of the reference.
 	double CallExpireFunc(Val *idx);
 
+	// Enum for the different kinds of changes an &on_change handler can see
+	enum OnChangeType { ELEMENT_NEW, ELEMENT_CHANGED, ELEMENT_REMOVED, ELEMENT_EXPIRED };
+
+	// Calls &change_func. Does not take ownership of values. (Refs if needed).
+	void CallChangeFunc(const Val* index, Val* old_value, OnChangeType tpe);
+
 	Val* DoClone(CloneState* state) override;
 
 	TableType* table_type;
@@ -933,6 +862,9 @@ protected:
 	IterCookie* expire_cookie;
 	PrefixTable* subnets;
 	Val* def_val;
+	Expr* change_func = nullptr;
+	// prevent recursion of change functions
+	bool in_change_func = false;
 };
 
 class RecordVal : public Val, public notifier::Modifiable {
@@ -995,9 +927,6 @@ public:
 	static void ResizeParseTimeRecords();
 
 protected:
-	friend class Val;
-	RecordVal()	{}
-
 	Val* DoClone(CloneState* state) override;
 
 	BroObj* origin;
@@ -1007,25 +936,15 @@ protected:
 
 class EnumVal : public Val {
 public:
-
-	ZEEK_DEPRECATED("Remove in v3.1: use t->GetVal(i) instead")
-	EnumVal(int i, EnumType* t) : Val(t)
-		{
-		val.int_val = i;
-		}
-
 	Val* SizeVal() const override	{ return val_mgr->GetInt(val.int_val); }
 
 protected:
 	friend class Val;
 	friend class EnumType;
 
-	EnumVal(EnumType* t, int i) : Val(t)
+	EnumVal(EnumType* t, int i) : Val(bro_int_t(i), t)
 		{
-		val.int_val = i;
 		}
-
-	EnumVal()	{}
 
 	void ValDescribe(ODesc* d) const override;
 	Val* DoClone(CloneState* state) override;
@@ -1089,9 +1008,6 @@ public:
 	bool Remove(unsigned int index);
 
 protected:
-	friend class Val;
-	VectorVal()	{ }
-
 	void ValDescribe(ODesc* d) const override;
 	Val* DoClone(CloneState* state) override;
 
@@ -1103,13 +1019,9 @@ protected:
 // Unref()'ing the original.  If not a match, generates an error message
 // and returns nil, also Unref()'ing v.  If is_init is true, then
 // the checking is done in the context of an initialization.
-extern Val* check_and_promote(Val* v, const BroType* t, int is_init, const Location* expr_location = nullptr);
-
-// Given a pointer to where a Val's core (i.e., its BRO value) resides,
-// returns a corresponding newly-created or Ref()'d Val.  ptr must already
-// be properly aligned.  Returns the size of the core in bytes in 'n'.
-// If t corresponds to a variable-length type, n must give the size on entry.
-Val* recover_val(void* ptr, BroType* t, int& n);
+extern IntrusivePtr<Val> check_and_promote(IntrusivePtr<Val> v,
+                                           const BroType* t, int is_init,
+                                           const Location* expr_location = nullptr);
 
 extern int same_val(const Val* v1, const Val* v2);
 extern int same_atomic_val(const Val* v1, const Val* v2);
@@ -1121,10 +1033,9 @@ extern void delete_vals(val_list* vals);
 inline bool is_vector(Val* v)	{ return  v->Type()->Tag() == TYPE_VECTOR; }
 
 // Returns v casted to type T if the type supports that. Returns null if not.
-// The returned value will be ref'ed.
 //
 // Note: This implements the script-level cast operator.
-extern Val* cast_value_to_type(Val* v, BroType* t);
+extern IntrusivePtr<Val> cast_value_to_type(Val* v, BroType* t);
 
 // Returns true if v can be casted to type T. If so, check_and_cast() will
 // succeed as well.

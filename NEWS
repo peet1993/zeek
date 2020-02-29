@@ -3,11 +3,58 @@ This document summarizes the most important changes in the current Zeek
 release. For an exhaustive list of changes, see the ``CHANGES`` file
 (note that submodules, such as Broker, come with their own ``CHANGES``.)
 
+Zeek 3.2.0
+==========
+
+New Functionality
+-----------------
+
+Changed Functionality
+---------------------
+
+- Several C++ functions have been changed to pass smart pointers
+  (`class IntrusivePtr<>`) instead of raw pointers.  This makes the
+  code more robust.  External plugins may need to be updated to this
+  API change.
+
+Removed Functionality
+---------------------
+
+- The fmt() function which takes a va_list argument is replaced, use
+  the new vfmt() function for equivalent functionality.  The former is
+  deprecated because overloading it with the variadic fmt() function
+  can cause the unintended overload to be chosen depending on how the
+  platform implements va_list.
+
+Deprecated Functionality
+------------------------
+
 Zeek 3.1.0
 ==========
 
 New Functionality
 -----------------
+
+- Add a new supervisor framework that enables Zeek to operate clusters
+  of processes itself without any external help.
+
+  The Supervisor framework provides an entirely new deployment mode
+  for Zeek, one that supervises a set of Zeek processes that are meant
+  to be persistent. A Supervisor automatically revives any process
+  that dies or exits prematurely and also arranges for an ordered
+  shutdown of the entire process tree upon its own termination. This
+  Supervisor mode for Zeek provides the basic foundation for process
+  configuration/management that could be used to deploy a Zeek cluster
+  similar to what ZeekControl does, but is also simpler to integrate
+  as a standard system service.
+
+  This mode is still experimental and will evolve over time. The
+  command-line argument of ``-j`` toggles Zeek to run in "Supervisor
+  mode" to allow for creation and management of child processes. If
+  you're going to test this, please note that you will need some
+  custom script code to configure the processes you want Zeek to run.
+  See the documentation for more information:
+  https://docs.zeek.org/en/stable/frameworks/supervisor.html
 
 - Add a new option, ``dpd_late_match_stop``, which can be used in conjuction
   with the option ``dpd_match_only_beginning`` and the new event
@@ -26,8 +73,30 @@ New Functionality
   redirect the output from "print" statements to a real log stream (e.g.
   instead of writing to stdout).
 
+- There is now a new ``&on_change`` attribute that can be used to be notified
+  of changes to tables and sets.
+
 Changed Functionality
 ---------------------
+
+- A C++17-capable compiler and CMake 3.0+ are now required to compile Zeek
+
+- The backwards-compability wrappers & work-arounds introduced in 3.0
+  for the "Bro to Zeek rename" have either changed their operation, or in some
+  cases been removed. Generally, anything that reported a
+  naming-related warning in 3.0 now aborts with a corresponding error
+  message. In cases where 3.0 silently continued to accept old names,
+  3.1 now reports warnings. Most importantly, that's loading of
+  scripts with ".bro" endings, which are now flagged and should be
+  renamed.
+
+- Broker has switched versions for the underlying CAF communication
+  library from 0.16 to 0.17. CAF has changed its wireformat between
+  those versions, which means that previous Broker and Zeek versions
+  won't be able to connect to the new ones. In other words, all Zeek
+  instances, as well as other Broker clients, need to upgrade at the
+  same time. In case of version mismatches, Broker now reports better
+  error messages to point out the problem.
 
 - The key type of ``Known::service_store`` has changed to
   ``Known::AddrPortServTriplet`` and ``Known::services`` is now a table
@@ -44,7 +113,7 @@ Changed Functionality
 
 - The tcp_option event is now correctly raised.
 
-'- The base scripts shipped with Zeek now use the new
+- The base scripts shipped with Zeek now use the new
   ``successful_connection_remove`` event instead of
   ``connection_state_remove`` where possible (when the logic doesn't
   pertain to unestablished TCP connections). There's a performance
@@ -62,8 +131,45 @@ Changed Functionality
   ``connection`` record field named "successful" to help indicate this
   new property of connections.
 
+- The JSON output formatters now use the RapidJSON library. This
+  improves their performance considerably over the library that was
+  previously used. Output from the formatters remains nearly
+  identical.
+
+- The ``decompose_uri`` function no longer raises an error when parsing
+  URIs with an empty port number (e.g. ``http://example.org:/``). Instead,
+  the ``portnum`` component of the returned ``URI`` value is left
+  uninitialized.
+
+- Replace old ``select``-based IO loop with a new architecture that doesn't
+  spin checking for active IO sources. The new architecture now waits for the
+  the sources to actively notify it when activity occurs and only processes
+  data once it's ready. This helps heavily reduce the CPU usage on idle
+  network connections. This includes a couple of breaking changes:
+
+  - Only a single packet source is allowed to be specified from the
+    command-line now. If you pass combinations of multiple ``-r`` and/or
+    ``-i`` flags, Zeek will return an error at startup.
+  - The IOSource API changed fairly wildly. The ``GetFds()`` and
+    ``NextTimestamp`` methods no longer exist. If you had previously
+    implemented a custom IOSource, you will need to look at the new API
+    and make changes to your code to accomodate it. This does not include
+    packet sources, which should remain functional with little to no
+    changes, since the entirety of the changes should be in ``PktSrc``.
+
+- Remove a large number of headers from being included by various files across
+  the entire code base, which leads to a sizeable build time improvement. This
+  set of changes has the potential to cause plugins to not build anymore. The
+  fixes for this potential breakage should just be a matter of including the
+  necessary headers in the plugin code.
+
 Removed Functionality
 ---------------------
+
+- Removed the ``current_conns_extern`` field from the ConnStats record
+  type. Zeek only maintains a single timer manager now, and without the
+  manager tags that came with multiple tiemr managers, we don't track
+  whether a connection is external anymore.
 
 Deprecated Functionality
 ------------------------

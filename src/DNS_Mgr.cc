@@ -2,6 +2,8 @@
 
 #include "zeek-config.h"
 
+#include "DNS_Mgr.h"
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #ifdef TIME_WITH_SYS_TIME
@@ -29,9 +31,10 @@
 
 #include <algorithm>
 
-#include "DNS_Mgr.h"
+#include "BroString.h"
 #include "Event.h"
 #include "Net.h"
+#include "Val.h"
 #include "Var.h"
 #include "Reporter.h"
 #include "iosource/Manager.h"
@@ -62,7 +65,7 @@ public:
 	// Returns nil if this was an address request.
 	const char* ReqHost() const	{ return host; }
 	const IPAddr& ReqAddr() const		{ return addr; }
-	const bool ReqIsTxt() const	{ return qtype == 16; }
+	bool ReqIsTxt() const	{ return qtype == 16; }
 
 	int MakeRequest(nb_dns_info* nb_dns);
 	int RequestPending() const	{ return request_pending; }
@@ -392,7 +395,6 @@ DNS_Mgr::DNS_Mgr(DNS_MgrMode arg_mode)
 	successful = 0;
 	failed = 0;
 	nb_dns = nullptr;
-	next_timestamp = -1.0;
 	}
 
 DNS_Mgr::~DNS_Mgr()
@@ -404,7 +406,7 @@ DNS_Mgr::~DNS_Mgr()
 	delete [] dir;
 	}
 
-void DNS_Mgr::Init()
+void DNS_Mgr::InitSource()
 	{
 	if ( did_init )
 		return;
@@ -440,8 +442,15 @@ void DNS_Mgr::Init()
 		nb_dns = nb_dns_init2(err, (struct sockaddr*)&ss);
 		}
 
-	if ( ! nb_dns )
+	if ( nb_dns )
+		{
+		if ( ! iosource_mgr->RegisterFd(nb_dns_fd(nb_dns), this) )
+			reporter->FatalError("Failed to register nb_dns file descriptor with iosource_mgr");
+		}
+	else
+		{
 		reporter->Warning("problem initializing NB-DNS: %s", err);
+		}
 
 	did_init = true;
 	}
@@ -460,14 +469,9 @@ void DNS_Mgr::InitPostScript()
 	// Registering will call Init()
 	iosource_mgr->Register(this, true);
 
-	// We never set idle to false, having the main loop only calling us from
-	// time to time. If we're issuing more DNS requests than we can handle
-	// in this way, we are having problems anyway ...
-	SetIdle(true);
-
 	const char* cache_dir = dir ? dir : ".";
 	cache_name = new char[strlen(cache_dir) + 64];
-	sprintf(cache_name, "%s/%s", cache_dir, ".bro-dns-cache");
+	sprintf(cache_name, "%s/%s", cache_dir, ".zeek-dns-cache");
 	LoadCache(fopen(cache_name, "r"));
 	}
 
@@ -503,7 +507,7 @@ TableVal* DNS_Mgr::LookupHost(const char* name)
 	if ( mode == DNS_FAKE )
 		return fake_name_lookup_result(name);
 
-	Init();
+	InitSource();
 
 	if ( ! nb_dns )
 		return empty_addr_set();
@@ -558,7 +562,7 @@ TableVal* DNS_Mgr::LookupHost(const char* name)
 
 Val* DNS_Mgr::LookupAddr(const IPAddr& addr)
 	{
-	Init();
+	InitSource();
 
 	if ( mode != DNS_PRIME )
 		{
@@ -1078,7 +1082,7 @@ static void resolve_lookup_cb(DNS_Mgr::LookupCallback* callback,
 
 void DNS_Mgr::AsyncLookupAddr(const IPAddr& host, LookupCallback* callback)
 	{
-	Init();
+	InitSource();
 
 	if ( mode == DNS_FAKE )
 		{
@@ -1116,7 +1120,7 @@ void DNS_Mgr::AsyncLookupAddr(const IPAddr& host, LookupCallback* callback)
 
 void DNS_Mgr::AsyncLookupName(const string& name, LookupCallback* callback)
 	{
-	Init();
+	InitSource();
 
 	if ( mode == DNS_FAKE )
 		{
@@ -1154,7 +1158,7 @@ void DNS_Mgr::AsyncLookupName(const string& name, LookupCallback* callback)
 
 void DNS_Mgr::AsyncLookupNameText(const string& name, LookupCallback* callback)
 	{
-	Init();
+	InitSource();
 
 	if ( mode == DNS_FAKE )
 		{
@@ -1240,30 +1244,6 @@ void DNS_Mgr::IssueAsyncRequests()
 
 		++asyncs_pending;
 		}
-	}
-
-void DNS_Mgr::GetFds(iosource::FD_Set* read, iosource::FD_Set* write,
-                     iosource::FD_Set* except)
-	{
-	if ( ! nb_dns )
-		return;
-
-	read->Insert(nb_dns_fd(nb_dns));
-	}
-
-double DNS_Mgr::NextTimestamp(double* network_time)
-	{
-	if ( asyncs_timeouts.empty() )
-		// No pending requests.
-		return -1.0;
-
-	if ( next_timestamp < 0 )
-		// Store the timestamp to help prevent starvation by some other
-		// IOSource always trying to use the same timestamp
-		// (assuming network_time does actually increase).
-		next_timestamp = timer_mgr->Time();
-
-	return next_timestamp;
 	}
 
 void DNS_Mgr::CheckAsyncAddrRequest(const IPAddr& addr, bool timeout)
@@ -1369,7 +1349,7 @@ void DNS_Mgr::CheckAsyncHostRequest(const char* host, bool timeout)
 
 void DNS_Mgr::Flush()
 	{
-	DoProcess();
+	Process();
 
 	HostMap::iterator it;
 	for ( it = host_mappings.begin(); it != host_mappings.end(); ++it )
@@ -1389,13 +1369,15 @@ void DNS_Mgr::Flush()
 	text_mappings.clear();
 	}
 
-void DNS_Mgr::Process()
+double DNS_Mgr::GetNextTimeout()
 	{
-	DoProcess();
-	next_timestamp = -1.0;
+	if ( asyncs_timeouts.empty() )
+		return -1;
+
+	return network_time + DNS_TIMEOUT;
 	}
 
-void DNS_Mgr::DoProcess()
+void DNS_Mgr::Process()
 	{
 	if ( ! nb_dns )
 		return;
@@ -1513,3 +1495,8 @@ void DNS_Mgr::GetStats(Stats* stats)
 	stats->cached_texts = text_mappings.size();
 	}
 
+void DNS_Mgr::Terminate()
+	{
+	if ( nb_dns )
+		iosource_mgr->UnregisterFd(nb_dns_fd(nb_dns), this);
+	}
