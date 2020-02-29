@@ -120,7 +120,6 @@ void NetSessions::Done()
 
 void NetSessions::NextPacket(double t, const Packet* pkt)
 	{
-//    DBG_LOG(DBG_LLPOC, "[LAYER 3] Next packet with ts=%f has layer 3 protocol %d", pkt->time, pkt->l3_proto);
 	SegmentProfiler prof(segment_logger, "dispatching-packet");
 
 	if ( raw_packet )
@@ -214,9 +213,7 @@ static unsigned int gre_header_len(uint16_t flags)
 void NetSessions::DoNextPacket(double t, const Packet* pkt, const IP_Hdr* ip_hdr,
 			       const EncapsulationStack* encapsulation)
 	{
-//    DBG_LOG(DBG_LLPOC, "[LAYER 4] Next packet with ts=%f contains protocol %d", pkt->time, (int) ip_hdr->NextProto());
-
-    uint32_t caplen = pkt->cap_len - pkt->hdr_size;
+	uint32_t caplen = pkt->cap_len - pkt->hdr_size;
 	const struct ip* ip4 = ip_hdr->IP4_Hdr();
 
 	uint32_t len = ip_hdr->TotalLen();
