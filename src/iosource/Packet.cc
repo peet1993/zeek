@@ -53,8 +53,7 @@ void Packet::Init(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_caplen,
 	l2_src = 0;
 	l2_dst = 0;
 
-    // for llanalyzer: l2 analyzer has to set valid flag, cur_pos points to the next payload
-	l2_valid = false;
+    // for llanalyzer: cur_pos points to the next payload
 	cur_pos = data;
 
 	if ( data && cap_len < hdr_size )
@@ -64,6 +63,7 @@ void Packet::Init(int arg_link_type, pkt_timeval *arg_ts, uint32_t arg_caplen,
 		}
 
 	if ( data )
+	    l2_valid = true;
         llanalyzer_mgr->processPacket(this);
     }
 
