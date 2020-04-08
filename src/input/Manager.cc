@@ -2281,7 +2281,7 @@ Val* Manager::ValueToVal(const Stream* i, const Value* val, BroType* request_typ
 		}
 
 	case TYPE_PORT:
-		return val_mgr->GetPort(val->val.port_val.port, val->val.port_val.proto);
+		return val_mgr->Port(val->val.port_val.port, val->val.port_val.proto)->Ref();
 
 	case TYPE_ADDR:
 		{
@@ -2429,7 +2429,7 @@ Val* Manager::ValueToVal(const Stream* i, const Value* val, bool& have_error) co
 		}
 
 	case TYPE_PORT:
-		return val_mgr->GetPort(val->val.port_val.port, val->val.port_val.proto);
+		return val_mgr->Port(val->val.port_val.port, val->val.port_val.proto)->Ref();
 
 	case TYPE_ADDR:
 		{
