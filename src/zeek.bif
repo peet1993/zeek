@@ -3940,7 +3940,7 @@ static bool mmdb_try_open_asn ()
 function mmdb_open_location_db%(f: string%) : bool
 	%{
 #ifdef USE_GEOIP
-	return val_mgr->GetBool(mmdb_open_loc(f->CheckString()));
+	return val_mgr->Bool(mmdb_open_loc(f->CheckString()));
 #else
 	return val_mgr->False();
 #endif
@@ -3957,7 +3957,7 @@ function mmdb_open_location_db%(f: string%) : bool
 function mmdb_open_asn_db%(f: string%) : bool
 	%{
 #ifdef USE_GEOIP
-	return val_mgr->GetBool(mmdb_open_asn(f->CheckString()));
+	return val_mgr->Bool(mmdb_open_asn(f->CheckString()));
 #else
 	return val_mgr->False();
 #endif
@@ -4274,7 +4274,7 @@ function disable_analyzer%(cid: conn_id, aid: count, err_if_no_conn: bool &defau
 		a->Parent()->PreventChildren(a->GetAnalyzerTag());
 
 	auto rval = a->Remove();
-	return val_mgr->GetBool(rval);
+	return val_mgr->Bool(rval);
 	%}
 
 ## Informs Zeek that it should skip any further processing of the contents of
@@ -4403,7 +4403,7 @@ function open_for_append%(f: string%): file
 ##              rmdir unlink rename
 function close%(f: file%): bool
 	%{
-	return val_mgr->GetBool(f->Close());
+	return val_mgr->Bool(f->Close());
 	%}
 
 ## Writes data to an open file.
@@ -4422,7 +4422,7 @@ function write_file%(f: file, data: string%): bool
 	if ( ! f )
 		return val_mgr->False();
 
-	return val_mgr->GetBool(f->Write((const char*) data->Bytes(), data->Len()));
+	return val_mgr->Bool(f->Write((const char*) data->Bytes(), data->Len()));
 	%}
 
 ## Alters the buffering behavior of a file.
@@ -4452,7 +4452,7 @@ function set_buf%(f: file, buffered: bool%): any
 ##              rmdir unlink rename
 function flush_all%(%): bool
 	%{
-	return val_mgr->GetBool(fflush(0) == 0);
+	return val_mgr->Bool(fflush(0) == 0);
 	%}
 
 ## Creates a new directory.
@@ -4570,7 +4570,7 @@ function rename%(src_f: string, dst_f: string%): bool
 ## .. todo:: Rename to ``is_open``.
 function active_file%(f: file%): bool
 	%{
-	return val_mgr->GetBool(f->IsOpen());
+	return val_mgr->Bool(f->IsOpen());
 	%}
 
 ## Gets the filename associated with a file handle.
@@ -4794,7 +4794,7 @@ function install_src_net_filter%(snet: subnet, tcp_flags: count, prob: double%) 
 ##              Pcap::error
 function uninstall_src_addr_filter%(ip: addr%) : bool
 	%{
-	return val_mgr->GetBool(sessions->GetPacketFilter()->RemoveSrc(ip->AsAddr()));
+	return val_mgr->Bool(sessions->GetPacketFilter()->RemoveSrc(ip->AsAddr()));
 	%}
 
 ## Removes a source subnet filter.
@@ -4815,7 +4815,7 @@ function uninstall_src_addr_filter%(ip: addr%) : bool
 ##              Pcap::error
 function uninstall_src_net_filter%(snet: subnet%) : bool
 	%{
-	return val_mgr->GetBool(sessions->GetPacketFilter()->RemoveSrc(snet));
+	return val_mgr->Bool(sessions->GetPacketFilter()->RemoveSrc(snet));
 	%}
 
 ## Installs a filter to drop packets destined to a given IP address with
@@ -4899,7 +4899,7 @@ function install_dst_net_filter%(snet: subnet, tcp_flags: count, prob: double%) 
 ##              Pcap::error
 function uninstall_dst_addr_filter%(ip: addr%) : bool
 	%{
-	return val_mgr->GetBool(sessions->GetPacketFilter()->RemoveDst(ip->AsAddr()));
+	return val_mgr->Bool(sessions->GetPacketFilter()->RemoveDst(ip->AsAddr()));
 	%}
 
 ## Removes a destination subnet filter.
@@ -4920,7 +4920,7 @@ function uninstall_dst_addr_filter%(ip: addr%) : bool
 ##              Pcap::error
 function uninstall_dst_net_filter%(snet: subnet%) : bool
 	%{
-	return val_mgr->GetBool(sessions->GetPacketFilter()->RemoveDst(snet));
+	return val_mgr->Bool(sessions->GetPacketFilter()->RemoveDst(snet));
 	%}
 
 ## Checks whether the last raised event came from a remote peer.
@@ -4928,7 +4928,7 @@ function uninstall_dst_net_filter%(snet: subnet%) : bool
 ## Returns: True if the last raised event came from a remote peer.
 function is_remote_event%(%) : bool
 	%{
-	return val_mgr->GetBool(mgr.CurrentSource() != SOURCE_LOCAL);
+	return val_mgr->Bool(mgr.CurrentSource() != SOURCE_LOCAL);
 	%}
 
 ## Stops Zeek's packet processing. This function is used to synchronize
